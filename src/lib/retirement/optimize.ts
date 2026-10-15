@@ -682,6 +682,62 @@ async function solveModel(
     }
   }
 
+  const last = years.length - 1;
+  if (last >= 0) {
+    const year = years[last];
+    const limit = limits[last];
+    const grown = (start: number, addend: number, rate: number) => Math.max(0, start + addend) * (1 + Math.max(0, rate) / 100);
+    let hsaP = years[0].initialP.hsa;
+    let hsaS = years[0].initialS.hsa;
+    for (const item of years) {
+      hsaP = item.enabledP.hsa ? grown(hsaP, item.contribP.hsa, item.rateP.hsa) : 0;
+      hsaS = item.spouseActive && item.enabledS.hsa ? grown(hsaS, item.contribS.hsa, item.rateS.hsa) : 0;
+    }
+    const endOfAccount = (who: "p" | "s", key: AccountKey) => {
+      const enabled = (who === "p" ? year.enabledP : year.enabledS)[accountKey(key)];
+      if (!enabled || (who === "s" && !year.spouseActive)) return con(0);
+      return vr(`E${who}${key}_${last}`);
+    };
+    const l401p = endOfAccount("p", "401");
+    const l401s = endOfAccount("s", "401");
+    const lhsaP = endOfAccount("p", "hsa");
+    const lhsaS = endOfAccount("s", "hsa");
+    const pretaxHi =
+      (year.enabledP.fourOhOneK ? grown(limit.start401P, year.contribP.fourOhOneK, year.rateP.fourOhOneK) : 0) +
+      (year.spouseActive && year.enabledS.fourOhOneK ? grown(limit.start401S, year.contribS.fourOhOneK, year.rateS.fourOhOneK) : 0) +
+      hsaP +
+      hsaS;
+    if (pretaxHi > 1) {
+      const ordinary = vr(`Rp_${last}`).v(`Rs_${last}`).v(`Cp_${last}`).v(`Cs_${last}`);
+      const pretax = add(add(l401p, l401s), add(lhsaP, lhsaS));
+      const domain = Math.max(limit.ordinaryHi, 0) + pretaxHi;
+      const pieces = incomeTaxPieces(year, domain);
+      model.eq(sub(vr(`OrdL_${last}`), add(ordinary, pretax)));
+      model.piecewise(`lq${last}`, vr(`OrdL_${last}`), pieces, `TaxL_${last}`, domain);
+      model.bound(`Lf_${last}`, 0, model.big);
+      model.ge(sub(vr(`Lf_${last}`), sub(vr(`TaxL_${last}`), vr(`Tax_${last}`))));
+      model.gain(vr(`Lf_${last}`, -1));
+      if (year.state === "ga") {
+        const income = add(add(ordinary, pretax), con(year.agi));
+        model.bound(`ExP2_${last}`, 0, Math.max(0, year.gaCapP));
+        model.bound(`ExS2_${last}`, 0, Math.max(0, year.gaCapS));
+        model.le(sub(vr(`ExP2_${last}`), add(add(add(vr(`Rp_${last}`), vr(`Cp_${last}`)), l401p), con(year.agi))));
+        model.le(sub(vr(`ExS2_${last}`), add(add(vr(`Rs_${last}`), vr(`Cs_${last}`)), l401s)));
+        model.bound(`Ga2_${last}`, 0, model.big);
+        model.ge(sub(vr(`Ga2_${last}`), sub(sub(sub(income, vr(`ExP2_${last}`)), vr(`ExS2_${last}`)), con(year.gaDeduction))));
+        model.bound(`St2_${last}`, 0, model.big);
+        model.ge(sub(vr(`St2_${last}`), scale(vr(`Ga2_${last}`), year.gaRate)));
+        model.bound(`Ls_${last}`, 0, model.big);
+        model.ge(sub(vr(`Ls_${last}`), sub(vr(`St2_${last}`), vr(`St_${last}`))));
+        model.gain(vr(`Ls_${last}`, -1));
+      }
+    }
+    if (year.age < 60) model.gain(scale(l401p, -0.1));
+    if (year.spouseActive && year.spouseAge !== null && year.spouseAge < 60) model.gain(scale(l401s, -0.1));
+    if (year.age < 65) model.gain(scale(lhsaP, -0.2));
+    if (year.spouseActive && year.spouseAge !== null && year.spouseAge < 65) model.gain(scale(lhsaS, -0.2));
+  }
+
   for (const who of ["p", "s"] as const) {
     for (const key of ["401", "roth", "hsa", "tax"] as const) {
       const flags = live(who, key);

@@ -150,6 +150,8 @@ export type ProjectionRow = {
   filingStatus: FilingStatus;
   accounts: Record<AccountType, AccountYear>;
   totalBalance: number;
+  /** Face value minus the tax to cash out 401(k) and HSA balances this year. */
+  liquidBalance: number;
   taxSummary: TaxSummary;
 };
 
@@ -448,6 +450,61 @@ export function stateTax(
     if (base <= ceiling) break;
   }
   return tax;
+}
+
+/**
+ * What the household could spend if every account were cashed out this year.
+ * Roth and taxable balances count in full. A 401(k) or HSA withdrawal is stacked
+ * on income already counted, and only the extra federal and state tax is removed.
+ * Cashing out a 401(k) before 60 adds the 10% penalty. An HSA spent on anything
+ * other than medical care adds the 20% penalty before 65.
+ */
+export function spendableTotal(args: {
+  face: number;
+  pretax401: { primary: number; spouse: number };
+  hsa: { primary: number; spouse: number };
+  ordinary: number;
+  retirement: { primary: number; spouse: number };
+  age: number;
+  spouseAge: number | null;
+  spouseActive: boolean;
+  filing: FilingStatus;
+  state: string;
+  ssIncome: number;
+  agi: number;
+}): number {
+  const extra401p = Math.max(0, args.pretax401.primary);
+  const extra401s = args.spouseActive ? Math.max(0, args.pretax401.spouse) : 0;
+  const extraHsaP = Math.max(0, args.hsa.primary);
+  const extraHsaS = args.spouseActive ? Math.max(0, args.hsa.spouse) : 0;
+  const extra = extra401p + extra401s + extraHsaP + extraHsaS;
+  const bill = (ordinary: number, retirement: { primary: number; spouse: number }) => {
+    const taxableSS = taxableSocialSecurity(args.ssIncome, args.agi + ordinary, args.filing);
+    const gross = args.agi + taxableSS + ordinary;
+    return (
+      federalTax(gross, args.filing, args.age, args.spouseAge, args.agi + ordinary) +
+      stateTax(gross, args.state, args.filing, args.age, args.spouseAge, taxableSS, {
+        primary: retirement.primary,
+        spouse: retirement.spouse,
+        other: args.agi,
+      })
+    );
+  };
+  let tax = 0;
+  if (extra > 0) {
+    tax = Math.max(
+      0,
+      bill(args.ordinary + extra, {
+        primary: args.retirement.primary + extra401p,
+        spouse: args.retirement.spouse + extra401s,
+      }) - bill(args.ordinary, args.retirement),
+    );
+  }
+  if (args.age < 60) tax += extra401p * 0.1;
+  if (args.spouseActive && args.spouseAge !== null && args.spouseAge < 60) tax += extra401s * 0.1;
+  if (args.age < 65) tax += extraHsaP * 0.2;
+  if (args.spouseActive && args.spouseAge !== null && args.spouseAge < 65) tax += extraHsaS * 0.2;
+  return Math.max(0, args.face - tax);
 }
 
 /** Taxable portion of Social Security benefits. */
@@ -859,6 +916,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
   const room: Record<number, { primary: number; spouse: number }> = {};
   const startAge = CURRENT_YEAR - inputs.birthYear;
   const endAge = projectionEndAge(inputs);
+  const targetAge = inputs.optimizeDistributions ? optimizationTargetAge(inputs) : endAge;
 
   const balances: Balances = {
     rothIra: inputs.accounts.rothIra.enabled ? inputs.accounts.rothIra.currentBalance : 0,
@@ -875,6 +933,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
   const married = inputs.filingStatus === "married";
   let kept = 0;
   let spent = 0;
+  let targetScore: number | null = null;
 
   for (let age = startAge; age <= endAge; age++) {
     const year = inputs.birthYear + age;
@@ -964,6 +1023,30 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
     const prior = rows.find((item) => item.year === year - 2);
     const irmaa = assessIrmaa(year, age, spouseAge, filingForRow, prior);
     if (irmaa.annualFee !== null) spent += irmaa.annualFee;
+    const liquid = spendableTotal({
+      face: total,
+      pretax401: {
+        primary: primary.accounts.fourOhOneK.endBalance,
+        spouse: spouse?.accounts.fourOhOneK.endBalance ?? 0,
+      },
+      hsa: {
+        primary: primary.accounts.hsa.endBalance,
+        spouse: spouse?.accounts.hsa.endBalance ?? 0,
+      },
+      ordinary,
+      retirement: {
+        primary: primary.rmdAmount + primary.conversionAmount,
+        spouse: (spouse?.rmdAmount ?? 0) + (spouse?.conversionAmount ?? 0),
+      },
+      age,
+      spouseAge,
+      spouseActive: spouse !== null,
+      filing: filingNow,
+      state: inputs.state,
+      ssIncome,
+      agi: inputs.adjustedGrossIncome,
+    });
+    if (age === targetAge) targetScore = liquid + kept - spent;
     rows.push({
       year,
       age,
@@ -971,6 +1054,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
       filingStatus: filingForRow,
       accounts,
       totalBalance: total,
+      liquidBalance: liquid,
       taxSummary: {
         agi: inputs.adjustedGrossIncome,
         ssIncome,
@@ -993,8 +1077,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
       },
     });
   }
-  const ending = rows.length > 0 ? rows[rows.length - 1].totalBalance : 0;
-  return { rows, score: ending + kept - spent, room };
+  return { rows, score: targetScore ?? 0, room };
 }
 
 const CONVERSION_RATES = [10, 12, 22, 24, 32, 35];
@@ -1126,6 +1209,7 @@ function applyAccount(
  * Distribution tax is paid from the taxable account first, then withheld from
  * Roth deposits. The score is ending balances plus cash kept, minus income tax
  * and IRMAA that were not already taken out of an account.
+ * Balances still in a 401(k) or HSA are counted after the tax to cash them out.
  * When maximize is on, that score is taken at the target age. Later years still
  * run through longevity, with no further Roth conversions.
  */
@@ -1298,6 +1382,26 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
     const prior = rows.find((item) => item.year === year - 2);
     const irmaa = assessIrmaa(year, age, spouseAge, filingNow, prior);
     if (irmaa.annualFee !== null) spent += irmaa.annualFee;
+    const liquid = spendableTotal({
+      face: total,
+      pretax401: {
+        primary: pAccounts.fourOhOneK.endBalance,
+        spouse: sAccounts?.fourOhOneK.endBalance ?? 0,
+      },
+      hsa: {
+        primary: pAccounts.hsa.endBalance,
+        spouse: sAccounts?.hsa.endBalance ?? 0,
+      },
+      ordinary,
+      retirement: { primary: rmdP + convP, spouse: rmdS + convS },
+      age,
+      spouseAge,
+      spouseActive,
+      filing: filingNow,
+      state: inputs.state,
+      ssIncome,
+      agi,
+    });
     const standardDeduction = filingNow === "married" ? STD_MARRIED : STD_SINGLE;
     const additionalDeduction = additionalStdDeduction(filingNow, age, spouseAge);
     const elderlyAgiDeduction = seniorBonus(filingNow, age, spouseAge, agi + ordinary);
@@ -1309,6 +1413,7 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
       filingStatus: filingNow,
       accounts,
       totalBalance: total,
+      liquidBalance: liquid,
       taxSummary: {
         agi,
         ssIncome,
@@ -1330,10 +1435,9 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
         irmaa,
       },
     });
-    if (age === targetAge) targetScore = total + kept - spent;
+    if (age === targetAge) targetScore = liquid + kept - spent;
   }
-  const ending = rows.length > 0 ? rows[rows.length - 1].totalBalance : 0;
-  return { rows, score: targetScore ?? ending + kept - spent };
+  return { rows, score: targetScore ?? 0 };
 }
 
 export type OptimizerYear = {

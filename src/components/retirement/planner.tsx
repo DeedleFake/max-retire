@@ -270,7 +270,7 @@ function AccountPanel({
               {onOptimizeDistributions ? (
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between gap-2">
-                    <Label className="text-xs text-muted-foreground">Maximize ending money</Label>
+                    <Label className="text-xs text-muted-foreground">Maximize spendable money</Label>
                     <Switch
                       checked={optimizeDistributions === true}
                       onCheckedChange={onOptimizeDistributions}
@@ -290,7 +290,7 @@ function AccountPanel({
                         hint="Primary age. The table still runs through longevity."
                       />
                       <p className="text-[11px] leading-snug text-muted-foreground">
-                        Chooses each year's Roth conversion so the money left at this age is as large as possible. After this age there are no more conversions. Required minimums and the withdrawals you entered still happen through longevity.
+                        Chooses each year's Roth conversion so the spendable money left at this age is as large as possible. A 401(k) or HSA is counted after the tax to cash it out. Roth and taxable balances count in full. After this age there are no more conversions. Required minimums and the withdrawals you entered still happen through longevity.
                       </p>
                     </div>
                   ) : null}
@@ -794,6 +794,12 @@ function SummaryTable({ rows }: { rows: ProjectionRow[] }) {
             <th className="sticky top-0 z-10 h-12 bg-card px-4 text-right align-middle text-sm font-medium text-muted-foreground">401(k)</th>
             <th className="sticky top-0 z-10 h-12 bg-card px-4 text-right align-middle text-sm font-medium text-muted-foreground">Taxable</th>
             <th className="sticky top-0 z-10 h-12 bg-card px-4 text-right align-middle text-sm font-bold text-muted-foreground">Total</th>
+            <th
+              className="sticky top-0 z-10 h-12 whitespace-nowrap bg-card px-4 text-right align-middle text-sm font-bold text-muted-foreground"
+              title="Total after the federal and state tax to cash out 401(k) and HSA balances this year. Roth and taxable count in full. A 401(k) cashed out before 60 also loses 10%, and an HSA spent on non-medical costs before 65 loses 20%."
+            >
+              Spendable
+            </th>
             <th className="sticky top-0 z-10 h-12 whitespace-nowrap bg-card px-4 text-right align-middle text-sm font-medium text-muted-foreground">Federal Tax</th>
             <th className="sticky top-0 z-10 h-12 whitespace-nowrap bg-card px-4 text-right align-middle text-sm font-medium text-muted-foreground">State Tax</th>
             <th
@@ -814,6 +820,9 @@ function SummaryTable({ rows }: { rows: ProjectionRow[] }) {
               <td className="p-4 text-right align-middle text-xs">{money(row.accounts.fourOhOneK.endBalance)}</td>
               <td className="p-4 text-right align-middle text-xs">{money(row.accounts.taxable.endBalance)}</td>
               <td className="p-4 text-right align-middle text-xs font-bold">{money(row.totalBalance)}</td>
+              <td className="p-4 text-right align-middle text-xs font-bold" data-testid={`text-spendable-${row.year}`}>
+                {money(row.liquidBalance)}
+              </td>
               <td className="p-4 text-right align-middle text-xs" data-testid={`text-federal-tax-${row.year}`}>
                 {money(row.taxSummary.federalTax)}
               </td>
@@ -1296,7 +1305,7 @@ export function RetirementPlanner() {
                 {maximizing
                   ? "Maximizing. The table updates as a better plan is found."
                   : exact
-                    ? `Exact plan. Conversions maximize the money you still have at age ${optimizationTargetAge(inputs)}.`
+                    ? `Exact plan. Conversions maximize the spendable money left at age ${optimizationTargetAge(inputs)}, after the tax to cash out pretax accounts.`
                     : "Showing the best plan found. The exact search did not finish, so this may not be the proven maximum."}
               </span>
             </div>
