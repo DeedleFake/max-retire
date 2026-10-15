@@ -167,10 +167,10 @@ function incomeTaxPieces(year: OptimizerYear, maxOrdinary: number): TaxPiece[] {
       if (hit !== null) knots.add(hit);
     }
     if (year.state === "brackets") {
-      const table = STATE_BRACKETS[year.stateCode] ?? [];
-      const scale = table.length > 1 && year.filing === "married" ? 2 : 1;
+      const schedule = STATE_BRACKETS[year.stateCode];
+      const table = (year.filing === "married" ? schedule?.married : schedule?.single) ?? [];
       for (const row of table) {
-        const hit = crossing(base[i], base[i + 1], (x) => magiAt(year, x), row.min * scale);
+        const hit = crossing(base[i], base[i + 1], (x) => magiAt(year, x), row.min);
         if (hit !== null) knots.add(hit);
       }
     }

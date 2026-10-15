@@ -424,18 +424,22 @@ export function stateTax(
     other: Math.max(0, income - taxableSS),
   },
 ): number {
-  const table = STATE_BRACKETS[state];
-  if (!table || table.length === 0) return 0;
+  const schedule = STATE_BRACKETS[state];
+  if (!schedule || schedule.single.length === 0) return 0;
   if (state === "GA") return georgiaTaxable(income, filing, age, spouseAge, taxableSS, retirement) * GEORGIA.rate;
-  const base = income;
-  const scale = table.length > 1 && filing === "married" ? 2 : 1;
+  if (state === "OH") {
+    const floor = 26_050;
+    if (income <= floor) return 0;
+    return 332 + 0.0275 * (income - floor);
+  }
+  const table = filing === "married" ? schedule.married : schedule.single;
   let tax = 0;
   for (let i = 0; i < table.length; i++) {
-    const floor = table[i].min * scale;
-    const ceiling = i + 1 < table.length ? table[i + 1].min * scale : Infinity;
-    const slice = Math.min(base, ceiling) - floor;
+    const floor = table[i].min;
+    const ceiling = i + 1 < table.length ? table[i + 1].min : Infinity;
+    const slice = Math.min(income, ceiling) - floor;
     if (slice > 0) tax += slice * table[i].rate;
-    if (base <= ceiling) break;
+    if (income <= ceiling) break;
   }
   return tax;
 }
@@ -1496,16 +1500,21 @@ function federalSupportLines(filing: FilingStatus): { slope: number; intercept: 
 }
 
 function stateSupportLines(state: string, filing: FilingStatus): { slope: number; intercept: number }[] {
-  const table = STATE_BRACKETS[state];
-  if (!table || table.length === 0 || state === "GA") return [];
-  const scale = table.length > 1 && filing === "married" ? 2 : 1;
+  const schedule = STATE_BRACKETS[state];
+  if (!schedule || schedule.single.length === 0 || state === "GA") return [];
+  const table = filing === "married" ? schedule.married : schedule.single;
   const lines = [{ slope: 0, intercept: 0 }];
   let taxAt = 0;
   for (let i = 0; i < table.length; i++) {
-    const floor = table[i].min * scale;
+    const floor = table[i].min;
     const rate = table[i].rate;
     lines.push({ slope: rate, intercept: taxAt - rate * floor });
-    if (i + 1 < table.length) taxAt += rate * (table[i + 1].min * scale - floor);
+    if (i + 1 < table.length) taxAt += rate * (table[i + 1].min - floor);
+  }
+  if (state === "OH") {
+    const floor = 26_050;
+    const lump = 332;
+    lines[lines.length - 1] = { slope: 0.0275, intercept: lump - 0.0275 * floor };
   }
   return lines;
 }
