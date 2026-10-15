@@ -39,28 +39,24 @@ plus 3%.
 
 ## What moves together
 
-Change every copy of a number. A census constant that still has last year's
-value will make the maximizer disagree with the table.
+Annual figures have one copy each.
 
-In `src/lib/retirement/engine.ts`:
+Edit `src/lib/retirement/tax-year.ts` only, except state rate schedules:
 
-- `CURRENT_YEAR`
-- `STD_SINGLE`, `STD_MARRIED`
-- `additionalStdDeduction` (age-65 extra deduction: single, and one or both spouses)
-- `seniorBonus` and the matching census fields `seniorLow`, `seniorHigh`, `seniorFull`, `seniorSlope`. The slope is `full / (high - low)` for one person and for both.
-- `BASE_LIMIT`, `HSA_FAMILY`, `catchUp`
-- `createAccounts`: the Roth, HSA, and 401(k) `annualContribution` expressions must stay equal to those limits. HSA is `HSA_FAMILY / 2` per spouse. The taxable `24000` is sample data, not a limit. Leave it.
-- `defaultInputs`: `retirementYear` and `marriageYear` stay equal to `CURRENT_YEAR`
-- `IRMAA_TIERS`, `IRMAA_SINGLE`, `IRMAA_MARRIED`. Tier 0's `singleMax` / `jointMax` are those two constants. The tier-5 test in `irmaaTierFor` (`500_000` / `750_000`) must stay equal to the income where tier 5 starts.
-- `georgiaRetirementCap`, the deduction inside `georgiaTaxable`, `gaDeduction`, and `gaRate`
-
-In `src/lib/retirement/tax-tables.ts`:
-
+- `TAX_YEAR`
+- `STANDARD_DEDUCTION`, `AGE_65_DEDUCTION`, `SENIOR_DEDUCTION`
+- `CONTRIBUTION_LIMITS`, `CATCH_UP`
+- `IRMAA_TIERS` and `IRMAA_TIER5`. Change tier 5 only in `IRMAA_TIER5`. Tier 4's `singleMax` / `jointMax` is that start minus one cent. Leave that expression. Set tier 4's `singleCap` / `jointCap` to the published whole-dollar ceiling inside the tier. `IRMAA_SINGLE`, `IRMAA_MARRIED`, and `IRMAA_CAP_TIERS` are derived. Do not write them out again.
+- `GEORGIA`. The calculation uses this object, not the `GA` entry in the state table.
 - `SINGLE_BRACKETS` and `MARRIED_BRACKETS`
-- `STATE_BRACKETS`, including `GA`, whose single rate must equal `gaRate`
-- The file's year comment
 
-Comments that name the old year get the new year. Do not rename `INFLATION`.
+`INFLATION` stays. It is the projection assumption, not the COLA.
+
+State rate schedules are `STATE_BRACKETS` in `src/lib/retirement/tax-tables.ts`. Update a state only when that state's law changed. An empty list means no wage tax. For a state with more than one bracket, `stateTax` doubles those widths for a joint return. Flat rates are not doubled.
+
+Do not edit `engine.ts` or `optimize.ts` to change a dollar amount. Both import this file. `engine.ts` re-exports `TAX_YEAR` as `CURRENT_YEAR`. The census reads `SENIOR_DEDUCTION` and divides `amount` by the width of the phaseout, so there is no slope constant to update. Default Roth, HSA, and 401(k) contributions read `CONTRIBUTION_LIMITS` and `CATCH_UP`. The HSA default per spouse is `hsaFamily / 2`. Catch-up amounts are not inflated. The taxable account's $24,000 contribution is sample data. Leave it.
+
+When the year changes, update the year and the source citation in the comments on `IRMAA_TIERS` and `GEORGIA`.
 
 ## Federal brackets
 
@@ -77,9 +73,8 @@ Check, for both filing statuses: each bracket's `baseTax` equals the tax on `min
 ## IRMAA
 
 Amounts are the monthly surcharge per person, not the base Part B premium.
-Tier 0 is `0`. `singleMax` / `jointMax` are inclusive. Tier 4's max stays a
-fraction below the tier-5 threshold so a MAGI of exactly that threshold is
-tier 5, matching `irmaaTierFor`. `singleCap` / `jointCap` are the whole-dollar
+Tier 0 is `0`. `singleMax` / `jointMax` are inclusive. A MAGI equal to
+`IRMAA_TIER5` is tier 5. `singleCap` / `jointCap` are the whole-dollar
 conversion ceilings and stay inside the tier.
 
 ## States
@@ -87,7 +82,7 @@ conversion ceilings and stay inside the tier.
 `STATE_BRACKETS` stores one width. For a state with more than one bracket,
 `stateTax` doubles those widths for a joint return. Flat rates are not
 doubled. Georgia does not use that path: its taxable income is
-`georgiaTaxable`, then `gaRate`.
+`georgiaTaxable`, then `GEORGIA.rate`.
 
 An empty bracket list means no wage tax. Leave those empty.
 
@@ -98,7 +93,7 @@ An empty bracket list means no wage tax. Leave those empty.
 - `INFLATION`
 - The 10% extra tax before 60 and the 20% HSA penalty before 65 in `spendableTotal`
 - Medicare eligibility at 65, the age-60 Roth conversion gate, and the two-year IRMAA lookback
-- Solver tolerance, piece size, and anything under `optimize.ts` except where a changed constant flows in through `engine.ts`
+- Solver tolerance, piece size, and `optimize.ts`. It imports the brackets. It has no copies of them.
 
 ## Finish
 

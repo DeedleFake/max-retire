@@ -1,37 +1,32 @@
 import {
+  AGE_65_DEDUCTION,
+  CATCH_UP,
+  CONTRIBUTION_LIMITS,
+  GEORGIA,
+  INFLATION,
+  IRMAA_CAP_TIERS,
+  IRMAA_MARRIED,
+  IRMAA_SINGLE,
+  IRMAA_TIER5,
+  IRMAA_TIERS,
   MARRIED_BRACKETS,
-  RMD_FACTORS,
+  SENIOR_DEDUCTION,
   SINGLE_BRACKETS,
-  STATE_BRACKETS,
-  STATE_NAMES,
-} from "./tax-tables";
+  STANDARD_DEDUCTION,
+  TAX_YEAR,
+  type IrmaaTier,
+} from "./tax-year";
+import { RMD_FACTORS, STATE_BRACKETS, STATE_NAMES } from "./tax-tables";
 
-export const CURRENT_YEAR = 2026;
-export const INFLATION = 0.03;
-/** Top of the 2026 standard (no-surcharge) IRMAA tier. CMS, November 2025. */
-export const IRMAA_MARRIED = 218_000;
-export const IRMAA_SINGLE = 109_000;
-
-/**
- * 2026 Medicare IRMAA tiers (Part B and Part D income-related surcharges).
- * MAGI at or below `singleMax` / `jointMax` stays in the tier. The top tier
- * starts at $500,000 single / $750,000 joint. Amounts are per person, monthly,
- * and are not inflated — the tax tables in this planner are 2026 nominal too.
- * `singleCap` / `jointCap` are the conversion ceilings (stay inside the tier).
- */
-export const IRMAA_TIERS = [
-  { id: 0, label: "Standard", singleMax: 109_000, jointMax: 218_000, singleCap: 109_000, jointCap: 218_000, partB: 0, partD: 0 },
-  { id: 1, label: "Tier 1", singleMax: 137_000, jointMax: 274_000, singleCap: 137_000, jointCap: 274_000, partB: 81.2, partD: 14.5 },
-  { id: 2, label: "Tier 2", singleMax: 171_000, jointMax: 342_000, singleCap: 171_000, jointCap: 342_000, partB: 202.9, partD: 37.5 },
-  { id: 3, label: "Tier 3", singleMax: 205_000, jointMax: 410_000, singleCap: 205_000, jointCap: 410_000, partB: 324.6, partD: 60.4 },
-  { id: 4, label: "Tier 4", singleMax: 499_999.99, jointMax: 749_999.99, singleCap: 499_999, jointCap: 749_999, partB: 446.3, partD: 83.3 },
-  { id: 5, label: "Tier 5", singleMax: Infinity, jointMax: Infinity, singleCap: Infinity, jointCap: Infinity, partB: 487, partD: 91 },
-] as const;
-
-export type IrmaaTier = (typeof IRMAA_TIERS)[number];
-
-/** Tiers a conversion can be capped at. Tier 5 has no ceiling. */
-export const IRMAA_CAP_TIERS = IRMAA_TIERS.filter((tier) => tier.id < 5);
+export {
+  INFLATION,
+  IRMAA_CAP_TIERS,
+  IRMAA_MARRIED,
+  IRMAA_SINGLE,
+  IRMAA_TIERS,
+};
+export const CURRENT_YEAR = TAX_YEAR;
+export type { IrmaaTier } from "./tax-year";
 
 export const ACCOUNT_TYPES = ["rothIra", "hsa", "fourOhOneK", "taxable"] as const;
 export type AccountType = (typeof ACCOUNT_TYPES)[number];
@@ -43,17 +38,6 @@ export const ACCOUNT_LABELS: Record<AccountType, string> = {
   fourOhOneK: "401(k)",
   taxable: "Taxable Brokerage",
 };
-
-const BASE_LIMIT: Record<AccountType, number> = {
-  rothIra: 7500,
-  hsa: 4400,
-  fourOhOneK: 24500,
-  taxable: Infinity,
-};
-
-const HSA_FAMILY = 8750;
-const STD_SINGLE = 16100;
-const STD_MARRIED = 32200;
 
 export type AccountSettings = {
   enabled: boolean;
@@ -159,11 +143,11 @@ type Bracket = { rate: number; min: number; max: number; baseTax: number };
 type Balances = Record<AccountType, number>;
 
 export function catchUp(type: AccountType, age: number): number {
-  if (type === "rothIra" && age >= 50) return 1100;
-  if (type === "hsa" && age >= 55) return 1000;
+  if (type === "rothIra" && age >= 50) return CATCH_UP.rothIraFrom50;
+  if (type === "hsa" && age >= 55) return CATCH_UP.hsaFrom55;
   if (type === "fourOhOneK") {
-    if (age >= 60 && age <= 63) return 11250;
-    if (age >= 50) return 8000;
+    if (age >= 60 && age <= 63) return CATCH_UP.fourOhOneKFrom60Through63;
+    if (age >= 50) return CATCH_UP.fourOhOneKFrom50;
   }
   return 0;
 }
@@ -195,19 +179,19 @@ export function createAccounts(who: "primary" | "spouse", birthYear: number): Re
       enabled: true,
       stopContributionAge: 60,
       startWithdrawalAge: 60,
-      annualContribution: 7500 + catchUp("rothIra", age),
+      annualContribution: CONTRIBUTION_LIMITS.rothIra + catchUp("rothIra", age),
     }),
     hsa: blankAccount({
       enabled: true,
       stopContributionAge: 65,
       startWithdrawalAge: 65,
-      annualContribution: 4375 + catchUp("hsa", age),
+      annualContribution: CONTRIBUTION_LIMITS.hsaFamily / 2 + catchUp("hsa", age),
     }),
     fourOhOneK: blankAccount({
       enabled: who === "primary",
       stopContributionAge: 60,
       startWithdrawalAge: 60,
-      annualContribution: 24500 + catchUp("fourOhOneK", age),
+      annualContribution: CONTRIBUTION_LIMITS.fourOhOneK + catchUp("fourOhOneK", age),
     }),
     taxable: blankAccount({
       enabled: true,
@@ -222,9 +206,9 @@ export function createAccounts(who: "primary" | "spouse", birthYear: number): Re
 export function defaultInputs(): PlannerInputs {
   return {
     birthYear: 1955,
-    retirementYear: 2026,
+    retirementYear: TAX_YEAR,
     filingStatus: "married",
-    marriageYear: 2026,
+    marriageYear: TAX_YEAR,
     spouseBirthYear: 1960,
     longevityAge: 100,
     spouseLongevityAge: 100,
@@ -335,7 +319,8 @@ export function parsePlannerInputs(text: string): PlannerInputs {
 export function displayedLimit(type: AccountType, birthYear: number, filing: FilingStatus): number | null {
   if (type === "taxable") return null;
   const age = CURRENT_YEAR - birthYear;
-  const base = type === "hsa" && filing === "married" ? HSA_FAMILY / 2 : BASE_LIMIT[type];
+  const base =
+    type === "hsa" && filing === "married" ? CONTRIBUTION_LIMITS.hsaFamily / 2 : statutoryLimit(type);
   return base + catchUp(type, age);
 }
 
@@ -345,31 +330,29 @@ function bracketsFor(filing: FilingStatus): readonly Bracket[] {
 
 function additionalStdDeduction(filing: FilingStatus, age: number, spouseAge: number | null): number {
   if (filing === "married" && spouseAge !== null) {
-    const primary = age >= 65;
-    const spouse = spouseAge >= 65;
-    if (primary && spouse) return 3300;
-    if (primary || spouse) return 1650;
-    return 0;
+    const count = (age >= 65 ? 1 : 0) + (spouseAge >= 65 ? 1 : 0);
+    return count * AGE_65_DEDUCTION.marriedEach;
   }
-  return age >= 65 ? 2050 : 0;
+  return age >= 65 ? AGE_65_DEDUCTION.single : 0;
+}
+
+function seniorRow(both: boolean) {
+  return both ? SENIOR_DEDUCTION.married : SENIOR_DEDUCTION.single;
 }
 
 function seniorBonus(filing: FilingStatus, age: number, spouseAge: number | null, phaseoutIncome: number): number {
   const both = filing === "married" && spouseAge !== null && age >= 65 && spouseAge >= 65;
   const any = age >= 65 || (spouseAge !== null && spouseAge >= 65);
   if (!any) return 0;
-  if (both) {
-    if (phaseoutIncome < 150000) return 12000;
-    if (phaseoutIncome >= 250000) return 0;
-    return Math.max(0, 12000 - (phaseoutIncome - 150000) * 0.12);
-  }
-  if (phaseoutIncome < 75000) return 6000;
-  if (phaseoutIncome >= 175000) return 0;
-  return Math.max(0, 6000 - (phaseoutIncome - 75000) * 0.06);
+  const row = seniorRow(both);
+  if (phaseoutIncome < row.phaseoutStart) return row.amount;
+  if (phaseoutIncome >= row.phaseoutEnd) return 0;
+  const slope = row.amount / (row.phaseoutEnd - row.phaseoutStart);
+  return Math.max(0, row.amount - (phaseoutIncome - row.phaseoutStart) * slope);
 }
 
 function totalDeduction(filing: FilingStatus, age: number, spouseAge: number | null, phaseoutIncome: number): number {
-  const base = filing === "married" ? STD_MARRIED : STD_SINGLE;
+  const base = filing === "married" ? STANDARD_DEDUCTION.married : STANDARD_DEDUCTION.single;
   return base + additionalStdDeduction(filing, age, spouseAge) + seniorBonus(filing, age, spouseAge, phaseoutIncome);
 }
 
@@ -396,9 +379,13 @@ function bracketCeiling(ratePercent: number, filing: FilingStatus, age: number, 
 
 /** 2026 Georgia retirement-income exclusion, per person (O.C.G.A. § 48-7-27). */
 function georgiaRetirementCap(age: number): number {
-  if (age >= 65) return 65_000;
-  if (age >= 62) return 35_000;
+  if (age >= 65) return GEORGIA.exclusionFrom65;
+  if (age >= 62) return GEORGIA.exclusionFrom62;
   return 0;
+}
+
+function georgiaDeduction(filing: FilingStatus): number {
+  return filing === "married" ? GEORGIA.deduction.married : GEORGIA.deduction.single;
 }
 
 /**
@@ -420,7 +407,7 @@ function georgiaTaxable(
   const primaryExcluded = Math.min(georgiaRetirementCap(age), Math.max(0, retirement.primary) + Math.max(0, retirement.other));
   const spouseExcluded =
     filing === "married" && spouseAge !== null ? Math.min(georgiaRetirementCap(spouseAge), Math.max(0, retirement.spouse)) : 0;
-  const deduction = filing === "married" ? 30_000 : 15_000;
+  const deduction = georgiaDeduction(filing);
   return Math.max(0, withoutSS - primaryExcluded - spouseExcluded - deduction);
 }
 
@@ -439,7 +426,8 @@ export function stateTax(
 ): number {
   const table = STATE_BRACKETS[state];
   if (!table || table.length === 0) return 0;
-  const base = state === "GA" ? georgiaTaxable(income, filing, age, spouseAge, taxableSS, retirement) : income;
+  if (state === "GA") return georgiaTaxable(income, filing, age, spouseAge, taxableSS, retirement) * GEORGIA.rate;
+  const base = income;
   const scale = table.length > 1 && filing === "married" ? 2 : 1;
   let tax = 0;
   for (let i = 0; i < table.length; i++) {
@@ -533,7 +521,7 @@ function rmdFactor(age: number): number {
 }
 
 export function irmaaTierFor(magi: number, filing: FilingStatus): IrmaaTier {
-  const top = filing === "married" ? 750_000 : 500_000;
+  const top = filing === "married" ? IRMAA_TIER5.joint : IRMAA_TIER5.single;
   if (magi >= top) return IRMAA_TIERS[5];
   for (const tier of IRMAA_TIERS) {
     if (tier.id === 5) break;
@@ -588,9 +576,16 @@ function assessIrmaa(year: number, age: number, spouseAge: number | null, filing
   };
 }
 
+function statutoryLimit(type: AccountType): number {
+  if (type === "rothIra") return CONTRIBUTION_LIMITS.rothIra;
+  if (type === "hsa") return CONTRIBUTION_LIMITS.hsaSelf;
+  if (type === "fourOhOneK") return CONTRIBUTION_LIMITS.fourOhOneK;
+  return Infinity;
+}
+
 function contributionLimit(type: AccountType, year: number, age: number): number {
   if (type === "taxable") return Infinity;
-  const inflated = BASE_LIMIT[type] * Math.pow(1 + INFLATION, year - CURRENT_YEAR);
+  const inflated = statutoryLimit(type) * Math.pow(1 + INFLATION, year - CURRENT_YEAR);
   return inflated + catchUp(type, age);
 }
 
@@ -1002,7 +997,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
     const ordinary = rmdAmount + conversionAmount;
     const taxableSS = taxableSocialSecurity(ssIncome, inputs.adjustedGrossIncome + ordinary, filingNow);
     const gross = inputs.adjustedGrossIncome + taxableSS + ordinary;
-    const standardDeduction = filingNow === "married" ? STD_MARRIED : STD_SINGLE;
+    const standardDeduction = filingNow === "married" ? STANDARD_DEDUCTION.married : STANDARD_DEDUCTION.single;
     const additionalDeduction = additionalStdDeduction(filingNow, age, spouseAge);
     const elderlyAgiDeduction = seniorBonus(filingNow, age, spouseAge, inputs.adjustedGrossIncome + ordinary);
     const totalDeductions = standardDeduction + additionalDeduction + elderlyAgiDeduction;
@@ -1402,7 +1397,7 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
       ssIncome,
       agi,
     });
-    const standardDeduction = filingNow === "married" ? STD_MARRIED : STD_SINGLE;
+    const standardDeduction = filingNow === "married" ? STANDARD_DEDUCTION.married : STANDARD_DEDUCTION.single;
     const additionalDeduction = additionalStdDeduction(filingNow, age, spouseAge);
     const elderlyAgiDeduction = seniorBonus(filingNow, age, spouseAge, agi + ordinary);
     const totalDeductions = standardDeduction + additionalDeduction + elderlyAgiDeduction;
@@ -1624,16 +1619,16 @@ export function optimizerCensus(inputs: PlannerInputs): OptimizerYear[] {
               taxable: { mode: "none", amount: 0 },
             },
       senior,
-      seniorLow: senior === "both" ? 150_000 : 75_000,
-      seniorHigh: senior === "both" ? 250_000 : 175_000,
-      seniorFull: senior === "both" ? 12_000 : 6_000,
-      seniorSlope: senior === "both" ? 0.12 : 0.06,
-      fixedDeduction: (filing === "married" ? STD_MARRIED : STD_SINGLE) + additionalStdDeduction(filing, age, spouseAge),
+      seniorLow: seniorRow(senior === "both").phaseoutStart,
+      seniorHigh: seniorRow(senior === "both").phaseoutEnd,
+      seniorFull: seniorRow(senior === "both").amount,
+      seniorSlope: seniorRow(senior === "both").amount / (seniorRow(senior === "both").phaseoutEnd - seniorRow(senior === "both").phaseoutStart),
+      fixedDeduction: (filing === "married" ? STANDARD_DEDUCTION.married : STANDARD_DEDUCTION.single) + additionalStdDeduction(filing, age, spouseAge),
       federalLines: federalSupportLines(filing),
       state: inputs.state === "GA" ? "ga" : stateSupportLines(inputs.state, filing).length > 0 ? "brackets" : "none",
       stateCode: inputs.state,
-      gaRate: 0.0499,
-      gaDeduction: filing === "married" ? 30_000 : 15_000,
+      gaRate: GEORGIA.rate,
+      gaDeduction: georgiaDeduction(filing),
       gaCapP: georgiaRetirementCap(age),
       gaCapS: filing === "married" && spouseAge !== null ? georgiaRetirementCap(spouseAge) : 0,
       stateLines: stateSupportLines(inputs.state, filing),

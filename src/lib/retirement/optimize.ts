@@ -1,5 +1,6 @@
 import loadHighs from "highs";
-import { MARRIED_BRACKETS, SINGLE_BRACKETS, STATE_BRACKETS } from "./tax-tables";
+import { MARRIED_BRACKETS, SINGLE_BRACKETS } from "./tax-year";
+import { STATE_BRACKETS } from "./tax-tables";
 import {
   type ConversionPlan,
   type FilingStatus,
