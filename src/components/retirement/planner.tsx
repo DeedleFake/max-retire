@@ -833,14 +833,15 @@ function ColumnHeader({
   return (
     <th
       title={title}
-      className={`relative sticky top-0 z-10 h-12 whitespace-nowrap bg-card px-3 align-middle text-sm text-muted-foreground ${bold ? "font-bold" : "font-medium"} ${align === "left" ? "text-left" : "text-right"}`}
+      style={{ zIndex: 40 - index }}
+      className={`relative sticky top-0 h-12 whitespace-nowrap bg-card px-3 align-middle text-sm text-muted-foreground ${bold ? "font-bold" : "font-medium"} ${align === "left" ? "text-left" : "text-right"}`}
     >
       <span className="block truncate">{label}</span>
       <div
         role="separator"
         aria-orientation="vertical"
         aria-label={`Resize ${label}`}
-        className="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize touch-none"
+        className="absolute inset-y-0 right-0 z-30 w-3 cursor-col-resize touch-none hover:bg-primary/25"
         onPointerDown={(event) => onResizeStart(index, event)}
       />
     </th>
@@ -862,7 +863,7 @@ function SummaryTable({ rows, year, onSelect }: { rows: ProjectionRow[]; year: n
       bold: true,
       title: "Total after the federal and state tax to cash out 401(k) and HSA balances this year. Roth and taxable count in full. A 401(k) cashed out before 60 also loses 10%, and an HSA spent on non-medical costs before 65 loses 20%.",
     },
-    { label: "Adjusted Gross Income", align: "right", title: "Other income + taxable Social Security + RMD + Roth conversions." },
+    { label: "AGI", align: "right", title: "Adjusted gross income. Other income + taxable Social Security + RMD + Roth conversions." },
     { label: "Federal Tax", align: "right" },
     { label: "State Tax", align: "right" },
     { label: "Net Income", align: "right", title: "Other income + the full Social Security benefit + RMD + Roth conversions, minus federal and state income tax." },
