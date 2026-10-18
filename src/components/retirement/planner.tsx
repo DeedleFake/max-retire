@@ -861,7 +861,7 @@ function SummaryTable({ rows, year, onSelect }: { rows: ProjectionRow[]; year: n
       label: "Spendable",
       align: "right",
       bold: true,
-      title: "Total after the federal and state tax to cash out 401(k) and HSA balances this year. Roth and taxable count in full. A 401(k) cashed out before 60 also loses 10%, and an HSA spent on non-medical costs before 65 loses 20%.",
+      title: "Total after the federal and state tax to cash out 401(k) and HSA balances, this year's IRMAA surcharge, and the extra IRMAA that cash-out would cause two years later. Roth and taxable count in full. A 401(k) cashed out before 60 also loses 10%, and an HSA spent on non-medical costs before 65 loses 20%.",
     },
     { label: "AGI", align: "right", title: "Adjusted gross income. Other income + taxable Social Security + RMD + Roth conversions." },
     { label: "Federal Tax", align: "right" },
@@ -1144,7 +1144,7 @@ function SpendableBreakout({ row }: { row: ProjectionRow | undefined }) {
       <div className="mb-3">
         <p className="text-sm font-semibold">How the spendable amount was calculated</p>
         <p className="max-w-xl text-xs text-muted-foreground">
-          Select a year in the table. Roth and taxable balances count in full. Cashing out the 401(k) and HSA still in the accounts adds only the extra federal and state tax on top of this year's income. A 401(k) cashed out before 60 also loses 10%. An HSA spent on anything other than medical care before 65 loses 20%.
+          Select a year in the table. Roth and taxable balances count in full. Cashing out the 401(k) and HSA still in the accounts adds the extra federal and state tax, this year's IRMAA surcharge, and the extra IRMAA that cash-out would cause two years later. A 401(k) cashed out before 60 also loses 10%. An HSA spent on anything other than medical care before 65 loses 20%.
         </p>
       </div>
       <div className="grid gap-4 md:grid-cols-2">
@@ -1170,12 +1170,26 @@ function SpendableBreakout({ row }: { row: ProjectionRow | undefined }) {
             <BreakoutLine label="Extra income tax" value={money(part.extraTax)} />
             <BreakoutLine label="401(k) early-withdrawal penalty" value={money(penalty401)} />
             <BreakoutLine label="HSA non-medical penalty" value={money(penaltyHsa)} />
+            <BreakoutLine label={`IRMAA due in ${row.year}`} value={part.irmaaThisYear === null ? "—" : money(part.irmaaThisYear)} />
+            {part.irmaaCashoutYear !== null ? (
+              <>
+                <BreakoutLine label={`IRMAA in ${part.irmaaCashoutYear} from this year's income`} value={money(part.irmaaFeeBefore)} />
+                <BreakoutLine label={`IRMAA in ${part.irmaaCashoutYear} if 401(k) and HSA are cashed out`} value={money(part.irmaaFeeAfter)} />
+              </>
+            ) : null}
+            <BreakoutLine label="Extra IRMAA from cashing out" value={money(part.irmaaFromCashout)} />
             <BreakoutLine label="Spendable" value={money(part.spendable)} strong />
           </dl>
           <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
             {money(part.face)} − {money(part.extraTax)} extra tax
+            {part.irmaaThisYear !== null && part.irmaaThisYear > 0 ? ` − ${money(part.irmaaThisYear)} IRMAA` : ""}
+            {part.irmaaFromCashout > 0 ? ` − ${money(part.irmaaFromCashout)} later IRMAA` : ""}
             {penalty401 > 0 ? ` − ${money(penalty401)} 401(k) penalty` : ""}
             {penaltyHsa > 0 ? ` − ${money(penaltyHsa)} HSA penalty` : ""} = {money(part.spendable)}. This year's income tax stays in the year's net income. It is not taken off the ending balances again.
+            {part.irmaaThisYear === null ? ` IRMAA for ${row.year} depends on a year before this projection, so it is not subtracted.` : ""}
+            {part.irmaaCashoutYear === null
+              ? " Cashing out does not add a later IRMAA surcharge, because nobody in the projection is on Medicare two years later."
+              : ` The extra IRMAA is the ${part.irmaaCashoutYear} surcharge from this year's MAGI if the remaining 401(k) and HSA were withdrawn, minus the surcharge from this year's income alone.`}
             {penaltySentence("401(k)", row.age, part.fourOhOneKPrimary, part.penalty401Primary, 60, 0.1)}
             {spouse ? penaltySentence("spouse 401(k)", row.spouseAge ?? 0, part.fourOhOneKSpouse, part.penalty401Spouse, 60, 0.1) : ""}
             {penaltySentence("HSA", row.age, part.hsaPrimary, part.penaltyHsaPrimary, 65, 0.2)}

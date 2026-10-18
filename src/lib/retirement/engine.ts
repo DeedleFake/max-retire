@@ -464,6 +464,14 @@ export type SpendableBreakdown = {
   penalty401Spouse: number;
   penaltyHsaPrimary: number;
   penaltyHsaSpouse: number;
+  /** Extra IRMAA two years later caused by cashing out the remaining 401(k) and HSA. */
+  irmaaFromCashout: number;
+  /** Year that extra surcharge would be paid. Null when nobody in the projection would be on Medicare then. */
+  irmaaCashoutYear: number | null;
+  /** This year's IRMAA surcharge. Null when the lookback year is outside the projection. */
+  irmaaThisYear: number | null;
+  irmaaFeeBefore: number;
+  irmaaFeeAfter: number;
   spendable: number;
 };
 
@@ -472,7 +480,9 @@ export type SpendableBreakdown = {
  * Roth and taxable balances count in full. A 401(k) or HSA withdrawal is stacked
  * on income already counted, and only the extra federal and state tax is removed.
  * Cashing out a 401(k) before 60 adds the 10% penalty. An HSA spent on anything
- * other than medical care adds the 20% penalty before 65.
+ * other than medical care adds the 20% penalty before 65. This year's IRMAA
+ * surcharge is removed when it is known. The higher IRMAA that the cash-out
+ * would cause two years later is removed as well.
  */
 export function spendableTotal(args: {
   face: number;
@@ -489,6 +499,9 @@ export function spendableTotal(args: {
   state: string;
   ssIncome: number;
   agi: number;
+  irmaaThisYear: number | null;
+  futureEnrollees: number;
+  futureYear: number | null;
 }): SpendableBreakdown {
   const fourOhOneKPrimary = Math.max(0, args.pretax401.primary);
   const fourOhOneKSpouse = args.spouseActive ? Math.max(0, args.pretax401.spouse) : 0;
@@ -521,6 +534,19 @@ export function spendableTotal(args: {
   const penaltyHsaPrimary = args.age < 65 ? hsaPrimary * 0.2 : 0;
   const penaltyHsaSpouse = args.spouseActive && args.spouseAge !== null && args.spouseAge < 65 ? hsaSpouse * 0.2 : 0;
   const penalties = penalty401Primary + penalty401Spouse + penaltyHsaPrimary + penaltyHsaSpouse;
+  const magiFor = (ordinary: number) => {
+    const taxableSS = taxableSocialSecurity(args.ssIncome, args.agi + ordinary, args.filing);
+    return args.agi + taxableSS + ordinary;
+  };
+  const surcharge = (magi: number) => {
+    if (args.futureEnrollees <= 0) return 0;
+    const tier = irmaaTierFor(magi, args.filing);
+    return (tier.partB + tier.partD) * 12 * args.futureEnrollees;
+  };
+  const irmaaFeeBefore = surcharge(magiFor(args.ordinary));
+  const irmaaFeeAfter = surcharge(magiFor(args.ordinary + extra));
+  const irmaaFromCashout = Math.max(0, irmaaFeeAfter - irmaaFeeBefore);
+  const irmaaDue = args.irmaaThisYear ?? 0;
   return {
     roth: args.roth,
     taxable: args.taxable,
@@ -538,7 +564,12 @@ export function spendableTotal(args: {
     penalty401Spouse,
     penaltyHsaPrimary,
     penaltyHsaSpouse,
-    spendable: Math.max(0, args.face - extraTax - penalties),
+    irmaaFromCashout,
+    irmaaCashoutYear: args.futureEnrollees > 0 ? args.futureYear : null,
+    irmaaThisYear: args.irmaaThisYear,
+    irmaaFeeBefore,
+    irmaaFeeAfter,
+    spendable: Math.max(0, args.face - extraTax - penalties - irmaaDue - irmaaFromCashout),
   };
 }
 
@@ -590,6 +621,15 @@ function medicareEnrollees(age: number, spouseAge: number | null, filing: Filing
   const primary = age >= 65 ? 1 : 0;
   const spouse = filing === "married" && spouseAge !== null && spouseAge >= 65 ? 1 : 0;
   return primary + spouse;
+}
+
+/** People who would pay IRMAA two years after `age` if the household is still in the projection. */
+export function irmaaCashoutEnrollees(inputs: PlannerInputs, age: number, spouseAge: number | null): { year: number; enrollees: number } {
+  const year = inputs.birthYear + age + 2;
+  if (age + 2 > longevityEndAge(inputs)) return { year, enrollees: 0 };
+  const futureSpouse = spouseAge === null ? null : spouseAge + 2;
+  const married = inputs.filingStatus === "married" && inputs.marriageYear !== null && year >= inputs.marriageYear && futureSpouse !== null;
+  return { year, enrollees: medicareEnrollees(age + 2, futureSpouse, married ? "married" : "single") };
 }
 
 function assessIrmaa(year: number, age: number, spouseAge: number | null, filing: FilingStatus, prior: ProjectionRow | undefined): IrmaaFee {
@@ -1089,8 +1129,11 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
       state: inputs.state,
       ssIncome,
       agi: inputs.adjustedGrossIncome,
+      irmaaThisYear: irmaa.annualFee,
+      futureEnrollees: irmaaCashoutEnrollees(inputs, age, spouseAge).enrollees,
+      futureYear: irmaaCashoutEnrollees(inputs, age, spouseAge).year,
     });
-    if (age === targetAge) targetScore = spendable.spendable + kept - spent;
+    if (age === targetAge) targetScore = spendable.spendable + (spendable.irmaaThisYear ?? 0) + kept - spent;
     rows.push({
       year,
       age,
@@ -1448,6 +1491,9 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
       state: inputs.state,
       ssIncome,
       agi,
+      irmaaThisYear: irmaa.annualFee,
+      futureEnrollees: irmaaCashoutEnrollees(inputs, age, spouseAge).enrollees,
+      futureYear: irmaaCashoutEnrollees(inputs, age, spouseAge).year,
     });
     const standardDeduction = filingNow === "married" ? STANDARD_DEDUCTION.married : STANDARD_DEDUCTION.single;
     const additionalDeduction = additionalStdDeduction(filingNow, age, spouseAge);
@@ -1483,7 +1529,7 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
         irmaa,
       },
     });
-    if (age === targetAge) targetScore = spendable.spendable + kept - spent;
+    if (age === targetAge) targetScore = spendable.spendable + (spendable.irmaaThisYear ?? 0) + kept - spent;
   }
   return { rows, score: targetScore ?? 0 };
 }
@@ -1532,6 +1578,8 @@ export type OptimizerYear = {
   irmaaUpper: number[];
   /** Annual IRMAA fee charged this year if the lookback year's tier index is k. */
   irmaaFeeByTier: number[];
+  /** Annual IRMAA fee two years later if this year's MAGI is in tier k. Zero past longevity. */
+  irmaaCashoutFeeByTier: number[];
 };
 
 function withdrawalMode(acct: AccountSettings, age: number): { mode: "none" | "fixed" | "pct"; amount: number } {
@@ -1693,6 +1741,7 @@ export function optimizerCensus(inputs: PlannerInputs): OptimizerYear[] {
       enrollees: medicareEnrollees(age, spouseAge, filing),
       irmaaUpper: upper,
       irmaaFeeByTier: feeByTier,
+      irmaaCashoutFeeByTier: IRMAA_TIERS.map((tier) => (tier.partB + tier.partD) * 12 * irmaaCashoutEnrollees(inputs, age, spouseAge).enrollees),
     });
   }
   return years;

@@ -129,6 +129,35 @@ function tierAt(year: OptimizerYear, ordinary: number): number {
   return 5;
 }
 
+/** Annual IRMAA surcharge two years later, as a step function of this year's ordinary income. */
+function irmaaFeePieces(year: OptimizerYear, maxOrdinary: number, fees: number[]): Piece[] {
+  const cap = Math.max(0, maxOrdinary);
+  const knots = new Set<number>([0, cap]);
+  for (const upper of year.irmaaUpper) {
+    if (!Number.isFinite(upper)) continue;
+    const hit = crossing(0, cap, (value) => magiAt(year, value), upper);
+    if (hit !== null) knots.add(hit);
+  }
+  const points = [...knots].sort((a, b) => a - b);
+  const pieces: Piece[] = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const lo = points[i];
+    const hi = points[i + 1];
+    if (hi <= lo + 1e-6) continue;
+    const magi = magiAt(year, (lo + hi) / 2);
+    let tier = year.irmaaUpper.length;
+    for (let index = 0; index < year.irmaaUpper.length; index++) {
+      if (magi <= year.irmaaUpper[index]) {
+        tier = index;
+        break;
+      }
+    }
+    pieces.push({ lo, hi, slope: 0, intercept: fees[tier] ?? 0 });
+  }
+  if (pieces.length === 0) pieces.push({ lo: 0, hi: cap, slope: 0, intercept: fees[0] ?? 0 });
+  return pieces;
+}
+
 function crossing(lo: number, hi: number, value: (x: number) => number, target: number): number | null {
   const left = value(lo);
   const right = value(hi);
@@ -731,6 +760,13 @@ async function solveModel(
         model.bound(`Ls_${last}`, 0, model.big);
         model.ge(sub(vr(`Ls_${last}`), sub(vr(`St2_${last}`), vr(`St_${last}`))));
         model.gain(vr(`Ls_${last}`, -1));
+      }
+      const cashFees = year.irmaaCashoutFeeByTier;
+      if (cashFees.some((fee) => fee !== cashFees[0])) {
+        const ordinaryHi = Math.max(limit.ordinaryHi, 0);
+        model.piecewise(`ib${last}`, ordinary, irmaaFeePieces(year, ordinaryHi, cashFees), `Ib_${last}`, ordinaryHi);
+        model.piecewise(`ia${last}`, vr(`OrdL_${last}`), irmaaFeePieces(year, domain, cashFees), `Ia_${last}`, domain);
+        model.gain(sub(vr(`Ib_${last}`), vr(`Ia_${last}`)));
       }
     }
     if (year.age < 60) model.gain(scale(l401p, -0.1));
