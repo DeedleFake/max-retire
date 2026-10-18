@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useDeferredValue, useEffect, useRef, useState, type ChangeEvent, type PointerEvent } from "react";
 import {
   Area,
   AreaChart,
@@ -761,7 +761,7 @@ function GrowthChart({ rows }: { rows: ProjectionRow[] }) {
         <CardTitle className="text-sm font-semibold">Portfolio Growth</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="h-[350px] w-full">
+        <div className="h-[260px] w-full sm:h-[350px] xl:h-[460px]">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={data} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.4} />
@@ -781,38 +781,123 @@ function GrowthChart({ rows }: { rows: ProjectionRow[] }) {
   );
 }
 
-function SummaryTable({ rows }: { rows: ProjectionRow[] }) {
+function useColumnWidths() {
+  const [widths, setWidths] = useState<number[] | null>(null);
+  const widthsRef = useRef<number[] | null>(null);
+  widthsRef.current = widths;
+
+  function onResizeStart(index: number, event: PointerEvent<HTMLElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    const handle = event.currentTarget;
+    const headers = handle.closest("table")?.querySelectorAll("thead th");
+    const base = widthsRef.current ?? (headers ? Array.from(headers).map((header) => header.getBoundingClientRect().width) : []);
+    const startX = event.clientX;
+    const startWidth = base[index] ?? 80;
+    const pointerId = event.pointerId;
+    function move(nextEvent: globalThis.PointerEvent) {
+      if (nextEvent.pointerId !== pointerId) return;
+      const next = base.slice();
+      next[index] = Math.max(48, startWidth + nextEvent.clientX - startX);
+      setWidths(next);
+    }
+    function end(nextEvent: globalThis.PointerEvent) {
+      if (nextEvent.pointerId !== pointerId) return;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    }
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  }
+
+  return { widths, onResizeStart };
+}
+
+function ColumnHeader({
+  label,
+  title,
+  align,
+  bold,
+  index,
+  onResizeStart,
+}: {
+  label: string;
+  title?: string;
+  align: "left" | "right";
+  bold?: boolean;
+  index: number;
+  onResizeStart: (index: number, event: PointerEvent<HTMLElement>) => void;
+}) {
+  return (
+    <th
+      title={title}
+      className={`relative sticky top-0 z-10 h-12 whitespace-nowrap bg-card px-3 align-middle text-sm text-muted-foreground ${bold ? "font-bold" : "font-medium"} ${align === "left" ? "text-left" : "text-right"}`}
+    >
+      <span className="block truncate">{label}</span>
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={`Resize ${label}`}
+        className="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize touch-none"
+        onPointerDown={(event) => onResizeStart(index, event)}
+      />
+    </th>
+  );
+}
+
+function SummaryTable({ rows, year, onSelect }: { rows: ProjectionRow[]; year: number; onSelect: (year: number) => void }) {
+  const columns: { label: string; title?: string; align: "left" | "right"; bold?: boolean }[] = [
+    { label: "Year", align: "left" },
+    { label: "Age", align: "left" },
+    { label: "Roth IRA", align: "right" },
+    { label: "HSA", align: "right" },
+    { label: "401(k)", align: "right" },
+    { label: "Taxable", align: "right" },
+    { label: "Total", align: "right", bold: true },
+    {
+      label: "Spendable",
+      align: "right",
+      bold: true,
+      title: "Total after the federal and state tax to cash out 401(k) and HSA balances this year. Roth and taxable count in full. A 401(k) cashed out before 60 also loses 10%, and an HSA spent on non-medical costs before 65 loses 20%.",
+    },
+    { label: "Adjusted Gross Income", align: "right", title: "Other income + taxable Social Security + RMD + Roth conversions." },
+    { label: "Federal Tax", align: "right" },
+    { label: "State Tax", align: "right" },
+    { label: "Net Income", align: "right", title: "Other income + the full Social Security benefit + RMD + Roth conversions, minus federal and state income tax." },
+    { label: "IRMAA", align: "right", title: "Annual Part B and Part D IRMAA surcharge for everyone on Medicare. Based on MAGI from two years earlier." },
+  ];
+  const { widths, onResizeStart } = useColumnWidths();
   return (
     <div className="h-[500px] overflow-auto">
-      <table className="w-full caption-bottom text-sm">
+      <table
+        className={`caption-bottom text-sm ${widths ? "[&_td]:overflow-hidden [&_td]:text-ellipsis [&_td]:whitespace-nowrap" : "w-full"}`}
+        style={widths ? { tableLayout: "fixed", width: widths.reduce((sum, width) => sum + width, 0) } : undefined}
+      >
+        {widths ? (
+          <colgroup>
+            {widths.map((width, index) => (
+              <col key={columns[index]?.label ?? index} style={{ width }} />
+            ))}
+          </colgroup>
+        ) : null}
         <thead>
           <tr className="border-b">
-            <th className="sticky top-0 z-10 h-12 w-16 bg-card px-4 text-left align-middle text-sm font-medium text-muted-foreground">Year</th>
-            <th className="sticky top-0 z-10 h-12 w-12 bg-card px-4 text-left align-middle text-sm font-medium text-muted-foreground">Age</th>
-            <th className="sticky top-0 z-10 h-12 bg-card px-4 text-right align-middle text-sm font-medium text-muted-foreground">Roth IRA</th>
-            <th className="sticky top-0 z-10 h-12 bg-card px-4 text-right align-middle text-sm font-medium text-muted-foreground">HSA</th>
-            <th className="sticky top-0 z-10 h-12 bg-card px-4 text-right align-middle text-sm font-medium text-muted-foreground">401(k)</th>
-            <th className="sticky top-0 z-10 h-12 bg-card px-4 text-right align-middle text-sm font-medium text-muted-foreground">Taxable</th>
-            <th className="sticky top-0 z-10 h-12 bg-card px-4 text-right align-middle text-sm font-bold text-muted-foreground">Total</th>
-            <th
-              className="sticky top-0 z-10 h-12 whitespace-nowrap bg-card px-4 text-right align-middle text-sm font-bold text-muted-foreground"
-              title="Total after the federal and state tax to cash out 401(k) and HSA balances this year. Roth and taxable count in full. A 401(k) cashed out before 60 also loses 10%, and an HSA spent on non-medical costs before 65 loses 20%."
-            >
-              Spendable
-            </th>
-            <th className="sticky top-0 z-10 h-12 whitespace-nowrap bg-card px-4 text-right align-middle text-sm font-medium text-muted-foreground">Federal Tax</th>
-            <th className="sticky top-0 z-10 h-12 whitespace-nowrap bg-card px-4 text-right align-middle text-sm font-medium text-muted-foreground">State Tax</th>
-            <th
-              className="sticky top-0 z-10 h-12 whitespace-nowrap bg-card px-4 text-right align-middle text-sm font-medium text-muted-foreground"
-              title="Annual Part B and Part D IRMAA surcharge for everyone on Medicare. Based on MAGI from two years earlier."
-            >
-              IRMAA
-            </th>
+            {columns.map((column, index) => (
+              <ColumnHeader key={column.label} {...column} index={index} onResizeStart={onResizeStart} />
+            ))}
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.year} data-testid={`row-summary-${row.year}`} className="border-b transition-colors hover:bg-muted/50">
+            <tr
+              key={row.year}
+              data-testid={`row-summary-${row.year}`}
+              aria-selected={row.year === year}
+              onClick={() => onSelect(row.year)}
+              className={`cursor-pointer border-b transition-colors ${row.year === year ? "bg-primary/10" : "hover:bg-muted/50"}`}
+            >
               <td className="p-4 align-middle text-xs font-medium">{row.year}</td>
               <td className="p-4 align-middle text-xs">{ageLabel(row)}</td>
               <td className="p-4 text-right align-middle text-xs">{money(row.accounts.rothIra.endBalance)}</td>
@@ -823,11 +908,17 @@ function SummaryTable({ rows }: { rows: ProjectionRow[] }) {
               <td className="p-4 text-right align-middle text-xs font-bold" data-testid={`text-spendable-${row.year}`}>
                 {money(row.liquidBalance)}
               </td>
+              <td className="p-4 text-right align-middle text-xs" data-testid={`text-agi-${row.year}`}>
+                {money(row.taxSummary.grossIncome)}
+              </td>
               <td className="p-4 text-right align-middle text-xs" data-testid={`text-federal-tax-${row.year}`}>
                 {money(row.taxSummary.federalTax)}
               </td>
               <td className="p-4 text-right align-middle text-xs" data-testid={`text-state-tax-${row.year}`}>
                 {money(row.taxSummary.stateTax)}
+              </td>
+              <td className="p-4 text-right align-middle text-xs" data-testid={`text-net-${row.year}`}>
+                {money(row.taxSummary.annualNet)}
               </td>
               <td className="p-4 text-right align-middle text-xs" data-testid={`text-irmaa-${row.year}`}>
                 {row.taxSummary.irmaa.annualFee === null ? "—" : cents(row.taxSummary.irmaa.annualFee)}
@@ -841,18 +932,25 @@ function SummaryTable({ rows }: { rows: ProjectionRow[] }) {
 }
 
 function AccountTable({ rows, accountType }: { rows: ProjectionRow[]; accountType: AccountType }) {
+  const columns = ["Year", "Age", "Starting Balance", "Contribution", "Withdrawal", "Growth", "Ending Balance"];
+  const { widths, onResizeStart } = useColumnWidths();
   return (
     <div className="h-[500px] overflow-auto">
-      <table className="w-full caption-bottom text-sm">
+      <table
+        className={`caption-bottom text-sm ${widths ? "[&_td]:overflow-hidden [&_td]:text-ellipsis [&_td]:whitespace-nowrap" : "w-full"}`}
+        style={widths ? { tableLayout: "fixed", width: widths.reduce((sum, width) => sum + width, 0) } : undefined}
+      >
+        {widths ? (
+          <colgroup>
+            {widths.map((width, index) => (
+              <col key={columns[index] ?? index} style={{ width }} />
+            ))}
+          </colgroup>
+        ) : null}
         <thead>
           <tr className="border-b">
-            {["Year", "Age", "Starting Balance", "Contribution", "Withdrawal", "Growth", "Ending Balance"].map((heading, index) => (
-              <th
-                key={heading}
-                className={`sticky top-0 z-10 h-12 bg-card px-4 align-middle text-sm font-medium text-muted-foreground ${index < 2 ? "text-left" : "text-right"} ${index === 0 ? "w-16" : ""} ${index === 1 ? "w-12" : ""}`}
-              >
-                {heading}
-              </th>
+            {columns.map((heading, index) => (
+              <ColumnHeader key={heading} label={heading} align={index < 2 ? "left" : "right"} index={index} onResizeStart={onResizeStart} />
             ))}
           </tr>
         </thead>
@@ -883,7 +981,7 @@ function AccountTable({ rows, accountType }: { rows: ProjectionRow[]; accountTyp
   );
 }
 
-function FourOhOneKTable({ rows }: { rows: ProjectionRow[] }) {
+function FourOhOneKTable({ rows, year, onSelect }: { rows: ProjectionRow[]; year: number; onSelect: (year: number) => void }) {
   const headers: { label: string; title?: string; align: "left" | "right" }[] = [
     { label: "Year", align: "left" },
     { label: "Age", align: "left" },
@@ -893,23 +991,26 @@ function FourOhOneKTable({ rows }: { rows: ProjectionRow[] }) {
     { label: "RMD", align: "right", title: "Required minimum distribution from the 401(k)." },
     { label: "Growth", align: "right" },
     { label: "Ending Balance", align: "right" },
-    { label: "Adjusted Gross Income", align: "right", title: "Other income + taxable Social Security + RMD + Roth conversions." },
-    { label: "Net Income", align: "right", title: "Other income + the full Social Security benefit + RMD + Roth conversions, minus federal and state income tax." },
     { label: "IRMAA Income", align: "right", title: "MAGI Medicare uses: other income + taxable Social Security + RMD + Roth conversions." },
   ];
+  const { widths, onResizeStart } = useColumnWidths();
   return (
     <div className="h-[500px] overflow-auto">
-      <table className="w-full min-w-[1180px] caption-bottom text-sm">
+      <table
+        className={`caption-bottom text-sm ${widths ? "[&_td]:overflow-hidden [&_td]:text-ellipsis [&_td]:whitespace-nowrap" : "w-full min-w-[960px]"}`}
+        style={widths ? { tableLayout: "fixed", width: widths.reduce((sum, width) => sum + width, 0) } : undefined}
+      >
+        {widths ? (
+          <colgroup>
+            {widths.map((width, index) => (
+              <col key={headers[index]?.label ?? index} style={{ width }} />
+            ))}
+          </colgroup>
+        ) : null}
         <thead>
           <tr className="border-b">
-            {headers.map((heading) => (
-              <th
-                key={heading.label}
-                title={heading.title}
-                className={`sticky top-0 z-10 h-12 whitespace-nowrap bg-card px-3 align-middle text-sm font-medium text-muted-foreground ${heading.align === "left" ? "text-left" : "text-right"}`}
-              >
-                {heading.label}
-              </th>
+            {headers.map((heading, index) => (
+              <ColumnHeader key={heading.label} {...heading} index={index} onResizeStart={onResizeStart} />
             ))}
           </tr>
         </thead>
@@ -918,7 +1019,13 @@ function FourOhOneKTable({ rows }: { rows: ProjectionRow[] }) {
             const account = row.accounts.fourOhOneK;
             const tax = row.taxSummary;
             return (
-              <tr key={row.year} data-testid={`row-fourOhOneK-${row.year}`} className="border-b transition-colors hover:bg-muted/50">
+              <tr
+                key={row.year}
+                data-testid={`row-fourOhOneK-${row.year}`}
+                aria-selected={row.year === year}
+                onClick={() => onSelect(row.year)}
+                className={`cursor-pointer border-b transition-colors ${row.year === year ? "bg-primary/10" : "hover:bg-muted/50"}`}
+              >
                 <td className="px-3 py-3 align-middle text-xs font-medium">{row.year}</td>
                 <td className="px-3 py-3 align-middle text-xs">{ageLabel(row)}</td>
                 <td className="px-3 py-3 text-right align-middle text-xs">{money(account.startBalance)}</td>
@@ -935,12 +1042,6 @@ function FourOhOneKTable({ rows }: { rows: ProjectionRow[] }) {
                   {account.growth !== 0 ? money(account.growth) : "-"}
                 </td>
                 <td className="px-3 py-3 text-right align-middle text-xs font-semibold">{money(account.endBalance)}</td>
-                <td className="px-3 py-3 text-right align-middle text-xs" data-testid={`text-agi-${row.year}`}>
-                  {money(tax.grossIncome)}
-                </td>
-                <td className="px-3 py-3 text-right align-middle text-xs" data-testid={`text-net-${row.year}`}>
-                  {money(tax.annualNet)}
-                </td>
                 <td className="px-3 py-3 text-right align-middle text-xs" data-testid={`text-irmaa-income-${row.year}`}>
                   {money(tax.irmaaMagi)}
                 </td>
@@ -953,37 +1054,18 @@ function FourOhOneKTable({ rows }: { rows: ProjectionRow[] }) {
   );
 }
 
-function IrmaaBreakout({ rows }: { rows: ProjectionRow[] }) {
-  const firstFeeYear = rows.find((row) => row.taxSummary.irmaa.enrollees > 0 && row.taxSummary.irmaa.annualFee !== null)?.year;
-  const [year, setYear] = useState(firstFeeYear ?? rows.find((row) => row.age >= 65)?.year ?? rows[0]?.year ?? CURRENT_YEAR);
-  const row = rows.find((item) => item.year === year) ?? rows[0];
+function IrmaaBreakout({ row }: { row: ProjectionRow | undefined }) {
   if (!row) return null;
   const tax = row.taxSummary;
   const fee = tax.irmaa;
   const monthly = fee.partBMonthly + fee.partDMonthly;
   return (
     <div className="mt-4 rounded-md border p-4" data-testid="panel-irmaa-breakout">
-      <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-semibold">How IRMAA was calculated</p>
-          <p className="max-w-xl text-xs text-muted-foreground">
-            The fee in a given year uses MAGI from two years earlier. The 2028 surcharge is based on 2026 IRMAA income. Brackets are the 2026 CMS amounts and are not inflated.
-          </p>
-        </div>
-        <div className="w-36">
-          <NumberField
-            label="Year"
-            value={row.year}
-            onChange={(next) => {
-              const match = rows.find((item) => item.year === next);
-              setYear(match ? match.year : rows[0].year);
-            }}
-            min={rows[0].year}
-            max={rows[rows.length - 1].year}
-            commitOnBlur
-            testId="input-irmaa-year"
-          />
-        </div>
+      <div className="mb-3">
+        <p className="text-sm font-semibold">How IRMAA was calculated</p>
+        <p className="max-w-xl text-xs text-muted-foreground">
+          Select a year in the table. The fee in a given year uses MAGI from two years earlier. The 2028 surcharge is based on 2026 IRMAA income. Brackets are the 2026 CMS amounts and are not inflated.
+        </p>
       </div>
       <div className="grid gap-4 md:grid-cols-2">
         <div>
@@ -1044,7 +1126,72 @@ function BreakoutLine({ label, value, strong }: { label: string; value: string; 
   );
 }
 
+function penaltySentence(label: string, age: number, balance: number, penalty: number, freeAt: number, rate: number): string {
+  if (balance <= 0) return "";
+  if (penalty > 0) return ` ${label}: age ${age} is under ${freeAt}, so ${Math.round(rate * 100)}% is ${money(penalty)}.`;
+  return ` ${label}: age ${age} is ${freeAt} or older, so there is no ${Math.round(rate * 100)}% penalty.`;
+}
+
+function SpendableBreakout({ row }: { row: ProjectionRow | undefined }) {
+  if (!row) return null;
+  const part = row.spendable;
+  const penalty401 = part.penalty401Primary + part.penalty401Spouse;
+  const penaltyHsa = part.penaltyHsaPrimary + part.penaltyHsaSpouse;
+  const spouse = row.spouseAge !== null;
+  return (
+    <div className="mt-4 rounded-md border p-4" data-testid="panel-spendable-breakout">
+      <div className="mb-3">
+        <p className="text-sm font-semibold">How the spendable amount was calculated</p>
+        <p className="max-w-xl text-xs text-muted-foreground">
+          Select a year in the table. Roth and taxable balances count in full. Cashing out the 401(k) and HSA still in the accounts adds only the extra federal and state tax on top of this year's income. A 401(k) cashed out before 60 also loses 10%. An HSA spent on anything other than medical care before 65 loses 20%.
+        </p>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <div>
+          <p className="text-xs font-medium">Balances at the end of {row.year}</p>
+          <dl className="mt-2 space-y-1 text-xs">
+            <BreakoutLine label="Roth IRA" value={money(part.roth)} />
+            <BreakoutLine label="Taxable" value={money(part.taxable)} />
+            <BreakoutLine label={spouse ? "401(k), you" : "401(k)"} value={money(part.fourOhOneKPrimary)} />
+            {spouse ? <BreakoutLine label="401(k), spouse" value={money(part.fourOhOneKSpouse)} /> : null}
+            <BreakoutLine label={spouse ? "HSA, you" : "HSA"} value={money(part.hsaPrimary)} />
+            {spouse ? <BreakoutLine label="HSA, spouse" value={money(part.hsaSpouse)} /> : null}
+            <BreakoutLine label="Total" value={money(part.face)} strong />
+          </dl>
+        </div>
+        <div>
+          <p className="text-xs font-medium">Cost of cashing out what is left</p>
+          <dl className="mt-2 space-y-1 text-xs">
+            <BreakoutLine label="Federal tax on this year's income" value={money(part.federalBefore)} />
+            <BreakoutLine label="Federal tax if 401(k) and HSA are cashed out" value={money(part.federalAfter)} />
+            <BreakoutLine label="State tax on this year's income" value={money(part.stateBefore)} />
+            <BreakoutLine label="State tax if 401(k) and HSA are cashed out" value={money(part.stateAfter)} />
+            <BreakoutLine label="Extra income tax" value={money(part.extraTax)} />
+            <BreakoutLine label="401(k) early-withdrawal penalty" value={money(penalty401)} />
+            <BreakoutLine label="HSA non-medical penalty" value={money(penaltyHsa)} />
+            <BreakoutLine label="Spendable" value={money(part.spendable)} strong />
+          </dl>
+          <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
+            {money(part.face)} − {money(part.extraTax)} extra tax
+            {penalty401 > 0 ? ` − ${money(penalty401)} 401(k) penalty` : ""}
+            {penaltyHsa > 0 ? ` − ${money(penaltyHsa)} HSA penalty` : ""} = {money(part.spendable)}. This year's income tax stays in the year's net income. It is not taken off the ending balances again.
+            {penaltySentence("401(k)", row.age, part.fourOhOneKPrimary, part.penalty401Primary, 60, 0.1)}
+            {spouse ? penaltySentence("spouse 401(k)", row.spouseAge ?? 0, part.fourOhOneKSpouse, part.penalty401Spouse, 60, 0.1) : ""}
+            {penaltySentence("HSA", row.age, part.hsaPrimary, part.penaltyHsaPrimary, 65, 0.2)}
+            {spouse ? penaltySentence("spouse HSA", row.spouseAge ?? 0, part.hsaSpouse, part.penaltyHsaSpouse, 65, 0.2) : ""}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProjectionTable({ rows }: { rows: ProjectionRow[] }) {
+  const firstFeeYear = rows.find((row) => row.taxSummary.irmaa.enrollees > 0 && row.taxSummary.irmaa.annualFee !== null)?.year;
+  const [spendableYear, setSpendableYear] = useState(rows[0]?.year ?? CURRENT_YEAR);
+  const [irmaaYear, setIrmaaYear] = useState(firstFeeYear ?? rows.find((row) => row.age >= 65)?.year ?? rows[0]?.year ?? CURRENT_YEAR);
+  const spendableRow = rows.find((row) => row.year === spendableYear) ?? rows[0];
+  const irmaaRow = rows.find((row) => row.year === irmaaYear) ?? rows[0];
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -1070,14 +1217,15 @@ function ProjectionTable({ rows }: { rows: ProjectionRow[] }) {
             </TabsTrigger>
           </TabsList>
           <TabsContent value="summary">
-            <SummaryTable rows={rows} />
+            <SummaryTable rows={rows} year={spendableRow?.year ?? spendableYear} onSelect={setSpendableYear} />
+            <SpendableBreakout row={spendableRow} />
           </TabsContent>
           {ACCOUNT_TYPES.map((type) => (
             <TabsContent key={type} value={type}>
               {type === "fourOhOneK" ? (
                 <>
-                  <FourOhOneKTable rows={rows} />
-                  <IrmaaBreakout rows={rows} />
+                  <FourOhOneKTable rows={rows} year={irmaaRow?.year ?? irmaaYear} onSelect={setIrmaaYear} />
+                  <IrmaaBreakout row={irmaaRow} />
                 </>
               ) : (
                 <AccountTable rows={rows} accountType={type} />
@@ -1207,21 +1355,21 @@ function PlanTransfer({ inputs, onLoad }: { inputs: PlannerInputs; onLoad: (next
   return (
     <div className="ml-auto flex flex-col items-end gap-1">
       <div className="flex flex-wrap justify-end gap-1.5">
-        <button type="button" className={buttonClass} onClick={copy} data-testid="button-copy-plan">
+        <button type="button" className={buttonClass} onClick={copy} data-testid="button-copy-plan" aria-label="Copy plan">
           <Copy className="h-3.5 w-3.5" />
-          Copy
+          <span className="hidden sm:inline">Copy</span>
         </button>
-        <button type="button" className={buttonClass} onClick={() => void paste()} data-testid="button-paste-plan">
+        <button type="button" className={buttonClass} onClick={() => void paste()} data-testid="button-paste-plan" aria-label="Paste plan">
           <ClipboardPaste className="h-3.5 w-3.5" />
-          Paste
+          <span className="hidden sm:inline">Paste</span>
         </button>
-        <button type="button" className={buttonClass} onClick={saveFile} data-testid="button-save-plan">
+        <button type="button" className={buttonClass} onClick={saveFile} data-testid="button-save-plan" aria-label="Save plan">
           <Download className="h-3.5 w-3.5" />
-          Save
+          <span className="hidden sm:inline">Save</span>
         </button>
-        <button type="button" className={buttonClass} onClick={() => fileRef.current?.click()} data-testid="button-load-plan">
+        <button type="button" className={buttonClass} onClick={() => fileRef.current?.click()} data-testid="button-load-plan" aria-label="Load plan">
           <Upload className="h-3.5 w-3.5" />
-          Load
+          <span className="hidden sm:inline">Load</span>
         </button>
       </div>
       {status ? (
@@ -1273,47 +1421,48 @@ export function RetirementPlanner() {
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="sticky top-0 z-50 border-b bg-card/50 backdrop-blur-sm">
-        <div className="mx-auto flex max-w-[1400px] flex-col gap-2 px-4 py-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-md bg-primary/10">
-              <Landmark className="h-5 w-5 text-primary" />
-            </div>
-            <div>
-              <h1 className="text-base font-bold tracking-tight" data-testid="text-app-title">
-                Maximize My Retirement
-              </h1>
-              <p className="text-xs text-muted-foreground">Maximize your retirement savings across multiple account types</p>
-            </div>
-            <PlanTransfer inputs={inputs} onLoad={setInputs} />
+      <header className="border-b bg-card/80 backdrop-blur-sm lg:sticky lg:top-0 lg:z-50">
+        <div className="mx-auto flex w-full max-w-[2200px] items-center gap-2 px-3 py-2 lg:gap-3 lg:px-8 lg:py-3">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 lg:h-9 lg:w-9">
+            <Landmark className="h-4 w-4 text-primary lg:h-5 lg:w-5" />
           </div>
-          {inputs.optimizeDistributions ? (
-            <div
-              className={`flex items-center gap-2 rounded-md border px-3 py-2 text-xs ${
-                maximizing
-                  ? "border-primary/40 bg-primary/10 text-foreground"
-                  : exact
-                    ? "border-border bg-card text-muted-foreground"
-                    : "border-amber-500/40 bg-amber-500/10 text-foreground"
-              }`}
-              data-testid="text-optimize-status"
-              role="status"
-              aria-live="polite"
-            >
-              {maximizing ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" aria-hidden="true" /> : null}
-              <span>
-                {maximizing
-                  ? "Maximizing. The table updates as a better plan is found."
-                  : exact
-                    ? `Exact plan. Conversions maximize the spendable money left at age ${optimizationTargetAge(inputs)}, after the tax to cash out pretax accounts.`
-                    : "Showing the best plan found. The exact search did not finish, so this may not be the proven maximum."}
-              </span>
-            </div>
-          ) : null}
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate text-sm font-bold tracking-tight lg:text-base" data-testid="text-app-title">
+              Maximize My Retirement
+            </h1>
+            <p className="hidden truncate text-xs text-muted-foreground lg:block">Maximize your retirement savings across multiple account types</p>
+            {inputs.optimizeDistributions ? (
+              <p
+                className={`flex items-center gap-1.5 truncate text-[11px] lg:text-xs ${
+                  maximizing ? "text-foreground" : exact ? "text-muted-foreground" : "text-amber-600 dark:text-amber-400"
+                }`}
+                data-testid="text-optimize-status"
+                role="status"
+                aria-live="polite"
+                title={
+                  maximizing
+                    ? "Maximizing. The table updates as a better plan is found."
+                    : exact
+                      ? `Exact plan. Conversions maximize the spendable money left at age ${optimizationTargetAge(inputs)}, after the tax to cash out pretax accounts.`
+                      : "Showing the best plan found. The exact search did not finish, so this may not be the proven maximum."
+                }
+              >
+                {maximizing ? <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" aria-hidden="true" /> : null}
+                <span className="truncate">
+                  {maximizing
+                    ? "Maximizing. The table updates as a better plan is found."
+                    : exact
+                      ? `Exact plan through age ${optimizationTargetAge(inputs)}.`
+                      : "Approximate plan. The exact search did not finish."}
+                </span>
+              </p>
+            ) : null}
+          </div>
+          <PlanTransfer inputs={inputs} onLoad={setInputs} />
         </div>
       </header>
-      <main className="mx-auto max-w-[1400px] px-4 py-6">
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[360px_1fr]">
+      <main className="mx-auto w-full max-w-[2200px] px-3 py-4 lg:px-8 lg:py-6">
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[380px_minmax(0,1fr)]">
           <aside className="space-y-6">
             <InputsForm inputs={inputs} onChange={setInputs} />
           </aside>

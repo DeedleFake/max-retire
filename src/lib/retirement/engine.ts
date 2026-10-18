@@ -136,6 +136,7 @@ export type ProjectionRow = {
   totalBalance: number;
   /** Face value minus the tax to cash out 401(k) and HSA balances this year. */
   liquidBalance: number;
+  spendable: SpendableBreakdown;
   taxSummary: TaxSummary;
 };
 
@@ -444,6 +445,28 @@ export function stateTax(
   return tax;
 }
 
+/** Pieces of the spendable total for one year. */
+export type SpendableBreakdown = {
+  roth: number;
+  taxable: number;
+  fourOhOneKPrimary: number;
+  fourOhOneKSpouse: number;
+  hsaPrimary: number;
+  hsaSpouse: number;
+  face: number;
+  federalBefore: number;
+  stateBefore: number;
+  federalAfter: number;
+  stateAfter: number;
+  /** Extra federal and state tax from cashing out the remaining 401(k) and HSA. Never negative. */
+  extraTax: number;
+  penalty401Primary: number;
+  penalty401Spouse: number;
+  penaltyHsaPrimary: number;
+  penaltyHsaSpouse: number;
+  spendable: number;
+};
+
 /**
  * What the household could spend if every account were cashed out this year.
  * Roth and taxable balances count in full. A 401(k) or HSA withdrawal is stacked
@@ -453,6 +476,8 @@ export function stateTax(
  */
 export function spendableTotal(args: {
   face: number;
+  roth: number;
+  taxable: number;
   pretax401: { primary: number; spouse: number };
   hsa: { primary: number; spouse: number };
   ordinary: number;
@@ -464,39 +489,57 @@ export function spendableTotal(args: {
   state: string;
   ssIncome: number;
   agi: number;
-}): number {
-  const extra401p = Math.max(0, args.pretax401.primary);
-  const extra401s = args.spouseActive ? Math.max(0, args.pretax401.spouse) : 0;
-  const extraHsaP = Math.max(0, args.hsa.primary);
-  const extraHsaS = args.spouseActive ? Math.max(0, args.hsa.spouse) : 0;
-  const extra = extra401p + extra401s + extraHsaP + extraHsaS;
+}): SpendableBreakdown {
+  const fourOhOneKPrimary = Math.max(0, args.pretax401.primary);
+  const fourOhOneKSpouse = args.spouseActive ? Math.max(0, args.pretax401.spouse) : 0;
+  const hsaPrimary = Math.max(0, args.hsa.primary);
+  const hsaSpouse = args.spouseActive ? Math.max(0, args.hsa.spouse) : 0;
+  const extra = fourOhOneKPrimary + fourOhOneKSpouse + hsaPrimary + hsaSpouse;
   const bill = (ordinary: number, retirement: { primary: number; spouse: number }) => {
     const taxableSS = taxableSocialSecurity(args.ssIncome, args.agi + ordinary, args.filing);
     const gross = args.agi + taxableSS + ordinary;
-    return (
-      federalTax(gross, args.filing, args.age, args.spouseAge, args.agi + ordinary) +
-      stateTax(gross, args.state, args.filing, args.age, args.spouseAge, taxableSS, {
+    return {
+      federal: federalTax(gross, args.filing, args.age, args.spouseAge, args.agi + ordinary),
+      state: stateTax(gross, args.state, args.filing, args.age, args.spouseAge, taxableSS, {
         primary: retirement.primary,
         spouse: retirement.spouse,
         other: args.agi,
-      })
-    );
+      }),
+    };
   };
-  let tax = 0;
-  if (extra > 0) {
-    tax = Math.max(
-      0,
-      bill(args.ordinary + extra, {
-        primary: args.retirement.primary + extra401p,
-        spouse: args.retirement.spouse + extra401s,
-      }) - bill(args.ordinary, args.retirement),
-    );
-  }
-  if (args.age < 60) tax += extra401p * 0.1;
-  if (args.spouseActive && args.spouseAge !== null && args.spouseAge < 60) tax += extra401s * 0.1;
-  if (args.age < 65) tax += extraHsaP * 0.2;
-  if (args.spouseActive && args.spouseAge !== null && args.spouseAge < 65) tax += extraHsaS * 0.2;
-  return Math.max(0, args.face - tax);
+  const before = bill(args.ordinary, args.retirement);
+  const after =
+    extra > 0
+      ? bill(args.ordinary + extra, {
+          primary: args.retirement.primary + fourOhOneKPrimary,
+          spouse: args.retirement.spouse + fourOhOneKSpouse,
+        })
+      : before;
+  const extraTax = Math.max(0, after.federal + after.state - (before.federal + before.state));
+  const penalty401Primary = args.age < 60 ? fourOhOneKPrimary * 0.1 : 0;
+  const penalty401Spouse = args.spouseActive && args.spouseAge !== null && args.spouseAge < 60 ? fourOhOneKSpouse * 0.1 : 0;
+  const penaltyHsaPrimary = args.age < 65 ? hsaPrimary * 0.2 : 0;
+  const penaltyHsaSpouse = args.spouseActive && args.spouseAge !== null && args.spouseAge < 65 ? hsaSpouse * 0.2 : 0;
+  const penalties = penalty401Primary + penalty401Spouse + penaltyHsaPrimary + penaltyHsaSpouse;
+  return {
+    roth: args.roth,
+    taxable: args.taxable,
+    fourOhOneKPrimary,
+    fourOhOneKSpouse,
+    hsaPrimary,
+    hsaSpouse,
+    face: args.face,
+    federalBefore: before.federal,
+    stateBefore: before.state,
+    federalAfter: after.federal,
+    stateAfter: after.state,
+    extraTax,
+    penalty401Primary,
+    penalty401Spouse,
+    penaltyHsaPrimary,
+    penaltyHsaSpouse,
+    spendable: Math.max(0, args.face - extraTax - penalties),
+  };
 }
 
 /** Taxable portion of Social Security benefits. */
@@ -1022,8 +1065,10 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
     const prior = rows.find((item) => item.year === year - 2);
     const irmaa = assessIrmaa(year, age, spouseAge, filingForRow, prior);
     if (irmaa.annualFee !== null) spent += irmaa.annualFee;
-    const liquid = spendableTotal({
+    const spendable = spendableTotal({
       face: total,
+      roth: accounts.rothIra.endBalance,
+      taxable: accounts.taxable.endBalance,
       pretax401: {
         primary: primary.accounts.fourOhOneK.endBalance,
         spouse: spouse?.accounts.fourOhOneK.endBalance ?? 0,
@@ -1045,7 +1090,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
       ssIncome,
       agi: inputs.adjustedGrossIncome,
     });
-    if (age === targetAge) targetScore = liquid + kept - spent;
+    if (age === targetAge) targetScore = spendable.spendable + kept - spent;
     rows.push({
       year,
       age,
@@ -1053,7 +1098,8 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
       filingStatus: filingForRow,
       accounts,
       totalBalance: total,
-      liquidBalance: liquid,
+      liquidBalance: spendable.spendable,
+      spendable,
       taxSummary: {
         agi: inputs.adjustedGrossIncome,
         ssIncome,
@@ -1381,8 +1427,10 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
     const prior = rows.find((item) => item.year === year - 2);
     const irmaa = assessIrmaa(year, age, spouseAge, filingNow, prior);
     if (irmaa.annualFee !== null) spent += irmaa.annualFee;
-    const liquid = spendableTotal({
+    const spendable = spendableTotal({
       face: total,
+      roth: accounts.rothIra.endBalance,
+      taxable: accounts.taxable.endBalance,
       pretax401: {
         primary: pAccounts.fourOhOneK.endBalance,
         spouse: sAccounts?.fourOhOneK.endBalance ?? 0,
@@ -1412,7 +1460,8 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
       filingStatus: filingNow,
       accounts,
       totalBalance: total,
-      liquidBalance: liquid,
+      liquidBalance: spendable.spendable,
+      spendable,
       taxSummary: {
         agi,
         ssIncome,
@@ -1434,7 +1483,7 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
         irmaa,
       },
     });
-    if (age === targetAge) targetScore = liquid + kept - spent;
+    if (age === targetAge) targetScore = spendable.spendable + kept - spent;
   }
   return { rows, score: targetScore ?? 0 };
 }
