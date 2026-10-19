@@ -139,22 +139,21 @@ function irmaaFeePieces(year: OptimizerYear, maxOrdinary: number, fees: number[]
     if (hit !== null) knots.add(hit);
   }
   const points = [...knots].sort((a, b) => a - b);
+  const tierOf = (ordinary: number) => {
+    const magi = magiAt(year, ordinary);
+    for (let index = 0; index < year.irmaaUpper.length; index++) if (magi <= year.irmaaUpper[index]) return index;
+    return year.irmaaUpper.length;
+  };
+  // The legal tier includes its top dollar. The next piece starts a cent later so a
+  // balance sitting on the line cannot be scored as both tiers at once.
   const pieces: Piece[] = [];
   for (let i = 0; i < points.length - 1; i++) {
-    const lo = points[i];
+    const lo = i === 0 ? points[i] : Math.min(points[i] + 0.01, points[i + 1]);
     const hi = points[i + 1];
     if (hi <= lo + 1e-6) continue;
-    const magi = magiAt(year, (lo + hi) / 2);
-    let tier = year.irmaaUpper.length;
-    for (let index = 0; index < year.irmaaUpper.length; index++) {
-      if (magi <= year.irmaaUpper[index]) {
-        tier = index;
-        break;
-      }
-    }
-    pieces.push({ lo, hi, slope: 0, intercept: fees[tier] ?? 0 });
+    pieces.push({ lo, hi, slope: 0, intercept: fees[tierOf((lo + hi) / 2)] ?? 0 });
   }
-  if (pieces.length === 0) pieces.push({ lo: 0, hi: cap, slope: 0, intercept: fees[0] ?? 0 });
+  if (pieces.length === 0) pieces.push({ lo: 0, hi: cap, slope: 0, intercept: fees[tierOf(0)] ?? 0 });
   return pieces;
 }
 
