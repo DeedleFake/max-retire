@@ -1456,7 +1456,7 @@ export function RetirementPlanner() {
                 maximizing
                   ? "border-primary/40 bg-primary/10 text-foreground"
                   : exact
-                    ? "border-border bg-card text-muted-foreground"
+                    ? "border-green-600/40 bg-green-600/10 text-foreground dark:border-green-500/40 dark:bg-green-500/10"
                     : "border-amber-500/40 bg-amber-500/10 text-foreground"
               }`}
               data-testid="text-optimize-status"
