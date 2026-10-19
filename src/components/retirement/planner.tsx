@@ -1437,43 +1437,42 @@ export function RetirementPlanner() {
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b bg-card/80 backdrop-blur-sm lg:sticky lg:top-0 lg:z-50">
-        <div className="mx-auto flex w-full max-w-[2200px] items-center gap-2 px-3 py-2 lg:gap-3 lg:px-8 lg:py-3">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 lg:h-9 lg:w-9">
-            <Landmark className="h-4 w-4 text-primary lg:h-5 lg:w-5" />
+        <div className="mx-auto flex w-full max-w-[2200px] flex-col gap-2 px-3 py-2 lg:px-8 lg:py-3">
+          <div className="flex items-center gap-2 lg:gap-3">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 lg:h-9 lg:w-9">
+              <Landmark className="h-4 w-4 text-primary lg:h-5 lg:w-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h1 className="truncate text-sm font-bold tracking-tight lg:text-base" data-testid="text-app-title">
+                Maximize My Retirement
+              </h1>
+              <p className="hidden truncate text-xs text-muted-foreground lg:block">Maximize your retirement savings across multiple account types</p>
+            </div>
+            <PlanTransfer inputs={inputs} onLoad={setInputs} />
           </div>
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate text-sm font-bold tracking-tight lg:text-base" data-testid="text-app-title">
-              Maximize My Retirement
-            </h1>
-            <p className="hidden truncate text-xs text-muted-foreground lg:block">Maximize your retirement savings across multiple account types</p>
-            {inputs.optimizeDistributions ? (
-              <p
-                className={`flex items-center gap-1.5 truncate text-[11px] lg:text-xs ${
-                  maximizing ? "text-foreground" : exact ? "text-muted-foreground" : "text-amber-600 dark:text-amber-400"
-                }`}
-                data-testid="text-optimize-status"
-                role="status"
-                aria-live="polite"
-                title={
-                  maximizing
-                    ? "Maximizing. The table updates as a better plan is found."
-                    : exact
-                      ? `Exact plan. Conversions maximize the spendable money left at age ${optimizationTargetAge(inputs)}, after the tax to cash out pretax accounts.`
-                      : "Showing the best plan found. The exact search did not finish, so this may not be the proven maximum."
-                }
-              >
-                {maximizing ? <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" aria-hidden="true" /> : null}
-                <span className="truncate">
-                  {maximizing
-                    ? "Maximizing. The table updates as a better plan is found."
-                    : exact
-                      ? `Exact plan through age ${optimizationTargetAge(inputs)}.`
-                      : "Approximate plan. The exact search did not finish."}
-                </span>
-              </p>
-            ) : null}
-          </div>
-          <PlanTransfer inputs={inputs} onLoad={setInputs} />
+          {inputs.optimizeDistributions ? (
+            <div
+              className={`flex items-center gap-2 rounded-md border px-3 py-2 text-xs ${
+                maximizing
+                  ? "border-primary/40 bg-primary/10 text-foreground"
+                  : exact
+                    ? "border-border bg-card text-muted-foreground"
+                    : "border-amber-500/40 bg-amber-500/10 text-foreground"
+              }`}
+              data-testid="text-optimize-status"
+              role="status"
+              aria-live="polite"
+            >
+              {maximizing ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" aria-hidden="true" /> : null}
+              <span>
+                {maximizing
+                  ? "Maximizing. The table updates as a better plan is found."
+                  : exact
+                    ? `Exact plan. Conversions maximize the spendable money left at age ${optimizationTargetAge(inputs)}, after the tax to cash out pretax accounts.`
+                    : "Showing the best plan found. The exact search did not finish, so this may not be the proven maximum."}
+              </span>
+            </div>
+          ) : null}
         </div>
       </header>
       <main className="mx-auto w-full max-w-[2200px] px-3 py-4 lg:px-8 lg:py-6">
