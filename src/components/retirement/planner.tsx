@@ -31,6 +31,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { NumberField } from "@/components/retirement/number-field";
@@ -52,6 +53,7 @@ import {
   parsePlannerInputs,
   project,
   serializePlannerInputs,
+  spendableWeight,
 } from "@/lib/retirement/engine";
 import type { PlanMessage } from "@/lib/retirement/optimize.worker";
 
@@ -182,6 +184,46 @@ function BracketSelect({
   );
 }
 
+function SpendableWeightControl({ value, onCommit }: { value: number; onCommit: (value: number) => void }) {
+  const [draft, setDraft] = useState(() => Math.round(value * 100));
+  useEffect(() => setDraft(Math.round(value * 100)), [value]);
+  const detail =
+    draft <= 0
+      ? "A dollar still in a 401(k) or HSA counts as a dollar."
+      : draft >= 100
+        ? "A dollar still in a 401(k) or HSA counts only after the tax, penalty, and extra IRMAA to cash it out."
+        : `Cash-out tax, penalty, and extra IRMAA count at ${draft}%.`;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>Total</span>
+        <span>Spendable</span>
+      </div>
+      <Slider
+        value={[draft]}
+        min={0}
+        max={100}
+        step={1}
+        onValueChange={([next]) => setDraft(next ?? 0)}
+        onValueCommit={([next]) => onCommit((next ?? 0) / 100)}
+        aria-label="Balance between total and spendable"
+        data-testid="slider-spendable-weight"
+      />
+      <p className="text-[11px] leading-snug text-muted-foreground">{detail}</p>
+    </div>
+  );
+}
+
+function exactPlanStatus(inputs: PlannerInputs): string {
+  const age = optimizationTargetAge(inputs);
+  const weight = Math.round(spendableWeight(inputs) * 100);
+  if (weight <= 0) return `Exact plan. Conversions maximize the total money left at age ${age}. A 401(k) or HSA is counted in full.`;
+  if (weight >= 100) {
+    return `Exact plan. Conversions maximize the spendable money left at age ${age}, after the tax to cash out pretax accounts.`;
+  }
+  return `Exact plan. Conversions maximize the money left at age ${age}, counting ${weight}% of the cost to cash out a 401(k) or HSA.`;
+}
+
 function AccountPanel({
   accountType,
   settings,
@@ -192,6 +234,8 @@ function AccountPanel({
   onOptimizeDistributions,
   optimizeThroughAge,
   onOptimizeThroughAge,
+  optimizeSpendableWeight,
+  onOptimizeSpendableWeight,
 }: {
   accountType: AccountType;
   settings: AccountSettings;
@@ -202,6 +246,8 @@ function AccountPanel({
   onOptimizeDistributions?: (value: boolean) => void;
   optimizeThroughAge?: number;
   onOptimizeThroughAge?: (value: number) => void;
+  optimizeSpendableWeight?: number;
+  onOptimizeSpendableWeight?: (value: number) => void;
 }) {
   const Icon = ACCOUNT_ICON[accountType];
   const limit = displayedLimit(accountType, birthYear, filingStatus);
@@ -270,7 +316,7 @@ function AccountPanel({
               {onOptimizeDistributions ? (
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between gap-2">
-                    <Label className="text-xs text-muted-foreground">Maximize spendable money</Label>
+                    <Label className="text-xs text-muted-foreground">Maximize ending money</Label>
                     <Switch
                       checked={optimizeDistributions === true}
                       onCheckedChange={onOptimizeDistributions}
@@ -289,8 +335,12 @@ function AccountPanel({
                         testId="input-optimize-through-age"
                         hint="Primary age. The table still runs through longevity."
                       />
+                      <SpendableWeightControl
+                        value={optimizeSpendableWeight ?? 1}
+                        onCommit={(value) => onOptimizeSpendableWeight?.(value)}
+                      />
                       <p className="text-[11px] leading-snug text-muted-foreground">
-                        Chooses each year's Roth conversion so the spendable money left at this age is as large as possible. A 401(k) or HSA is counted after the tax to cash it out. Roth and taxable balances count in full. After this age there are no more conversions. Required minimums and the withdrawals you entered still happen through longevity.
+                        Chooses each year's Roth conversion so the money left at this age is as large as possible. The slider sets whether a 401(k) or HSA dollar counts in full or after the cost to cash it out. After this age there are no more conversions. Required minimums and the withdrawals you entered still happen through longevity.
                       </p>
                     </div>
                   ) : null}
@@ -456,6 +506,12 @@ function AccountTabs({
             onOptimizeThroughAge={
               who === "primary" && type === "fourOhOneK"
                 ? (value) => onChange({ ...inputs, optimizeThroughAge: value })
+                : undefined
+            }
+            optimizeSpendableWeight={who === "primary" && type === "fourOhOneK" ? inputs.optimizeSpendableWeight : undefined}
+            onOptimizeSpendableWeight={
+              who === "primary" && type === "fourOhOneK"
+                ? (value) => onChange({ ...inputs, optimizeSpendableWeight: value })
                 : undefined
             }
           />
@@ -1468,7 +1524,7 @@ export function RetirementPlanner() {
                 {maximizing
                   ? "Maximizing. The table updates as a better plan is found."
                   : exact
-                    ? `Exact plan. Conversions maximize the spendable money left at age ${optimizationTargetAge(inputs)}, after the tax to cash out pretax accounts.`
+                    ? exactPlanStatus(inputs)
                     : "Showing the best plan found. The exact search did not finish, so this may not be the proven maximum."}
               </span>
             </div>

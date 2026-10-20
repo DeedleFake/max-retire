@@ -10,6 +10,7 @@ import {
   optimizerCensus,
   project,
   simulatePlan,
+  spendableWeight,
   stateTax,
   taxableSocialSecurity,
   type OptimizerYear,
@@ -736,7 +737,8 @@ async function solveModel(
       (year.spouseActive && year.enabledS.fourOhOneK ? grown(limit.start401S, year.contribS.fourOhOneK, year.rateS.fourOhOneK) : 0) +
       hsaP +
       hsaS;
-    if (pretaxHi > 1) {
+    const weight = spendableWeight(inputs);
+    if (pretaxHi > 1 && weight > 0) {
       const ordinary = vr(`Rp_${last}`).v(`Rs_${last}`).v(`Cp_${last}`).v(`Cs_${last}`);
       const pretax = add(add(l401p, l401s), add(lhsaP, lhsaS));
       const domain = Math.max(limit.ordinaryHi, 0) + pretaxHi;
@@ -745,7 +747,7 @@ async function solveModel(
       model.piecewise(`lq${last}`, vr(`OrdL_${last}`), pieces, `TaxL_${last}`, domain);
       model.bound(`Lf_${last}`, 0, model.big);
       model.ge(sub(vr(`Lf_${last}`), sub(vr(`TaxL_${last}`), vr(`Tax_${last}`))));
-      model.gain(vr(`Lf_${last}`, -1));
+      model.gain(vr(`Lf_${last}`, -weight));
       if (year.state === "ga") {
         const income = add(add(ordinary, pretax), con(year.agi));
         model.bound(`ExP2_${last}`, 0, Math.max(0, year.gaCapP));
@@ -758,20 +760,20 @@ async function solveModel(
         model.ge(sub(vr(`St2_${last}`), scale(vr(`Ga2_${last}`), year.gaRate)));
         model.bound(`Ls_${last}`, 0, model.big);
         model.ge(sub(vr(`Ls_${last}`), sub(vr(`St2_${last}`), vr(`St_${last}`))));
-        model.gain(vr(`Ls_${last}`, -1));
+        model.gain(vr(`Ls_${last}`, -weight));
       }
       const cashFees = year.irmaaCashoutFeeByTier;
       if (cashFees.some((fee) => fee !== cashFees[0])) {
         const ordinaryHi = Math.max(limit.ordinaryHi, 0);
         model.piecewise(`ib${last}`, ordinary, irmaaFeePieces(year, ordinaryHi, cashFees), `Ib_${last}`, ordinaryHi);
         model.piecewise(`ia${last}`, vr(`OrdL_${last}`), irmaaFeePieces(year, domain, cashFees), `Ia_${last}`, domain);
-        model.gain(sub(vr(`Ib_${last}`), vr(`Ia_${last}`)));
+        model.gain(scale(sub(vr(`Ib_${last}`), vr(`Ia_${last}`)), weight));
       }
     }
-    if (year.age < 60) model.gain(scale(l401p, -0.1));
-    if (year.spouseActive && year.spouseAge !== null && year.spouseAge < 60) model.gain(scale(l401s, -0.1));
-    if (year.age < 65) model.gain(scale(lhsaP, -0.2));
-    if (year.spouseActive && year.spouseAge !== null && year.spouseAge < 65) model.gain(scale(lhsaS, -0.2));
+    if (weight > 0 && year.age < 60) model.gain(scale(l401p, -0.1 * weight));
+    if (weight > 0 && year.spouseActive && year.spouseAge !== null && year.spouseAge < 60) model.gain(scale(l401s, -0.1 * weight));
+    if (weight > 0 && year.age < 65) model.gain(scale(lhsaP, -0.2 * weight));
+    if (weight > 0 && year.spouseActive && year.spouseAge !== null && year.spouseAge < 65) model.gain(scale(lhsaS, -0.2 * weight));
   }
 
   for (const who of ["p", "s"] as const) {

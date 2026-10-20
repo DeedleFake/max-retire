@@ -74,6 +74,12 @@ export type PlannerInputs = {
   optimizeDistributions: boolean;
   /** Primary age the maximized plan stops at. Ignored unless maximize is on. */
   optimizeThroughAge: number;
+  /**
+   * Share of the cash-out cost that maximization subtracts.
+   * 0 counts a remaining 401(k) or HSA dollar in full. 1 subtracts the tax,
+   * penalty, and extra IRMAA to cash it out. Roth and taxable money are full either way.
+   */
+  optimizeSpendableWeight: number;
   accounts: Record<AccountType, AccountSettings>;
   spouseAccounts: Record<AccountType, AccountSettings>;
 };
@@ -219,6 +225,7 @@ export function defaultInputs(): PlannerInputs {
     state: "GA",
     optimizeDistributions: false,
     optimizeThroughAge: 90,
+    optimizeSpendableWeight: 1,
     accounts: createAccounts("primary", 1955),
     spouseAccounts: createAccounts("spouse", 1960),
   };
@@ -292,6 +299,7 @@ export function parsePlannerInputs(text: string): PlannerInputs {
     !(state in STATE_NAMES) ||
     (plan.optimizeDistributions !== undefined && typeof plan.optimizeDistributions !== "boolean") ||
     (plan.optimizeThroughAge !== undefined && !isFiniteNumber(plan.optimizeThroughAge)) ||
+    (plan.optimizeSpendableWeight !== undefined && !isFiniteNumber(plan.optimizeSpendableWeight)) ||
     !isAccountMap(plan.accounts) ||
     !isAccountMap(plan.spouseAccounts)
   ) {
@@ -311,6 +319,7 @@ export function parsePlannerInputs(text: string): PlannerInputs {
     state,
     optimizeDistributions: plan.optimizeDistributions === true,
     optimizeThroughAge: isFiniteNumber(plan.optimizeThroughAge) ? plan.optimizeThroughAge : plan.longevityAge,
+    optimizeSpendableWeight: isFiniteNumber(plan.optimizeSpendableWeight) ? Math.min(1, Math.max(0, plan.optimizeSpendableWeight)) : 1,
     accounts: plan.accounts,
     spouseAccounts: plan.spouseAccounts,
   };
@@ -571,6 +580,24 @@ export function spendableTotal(args: {
     irmaaFeeAfter,
     spendable: Math.max(0, args.face - extraTax - penalties - irmaaDue - irmaaFromCashout),
   };
+}
+
+/** 0 counts pretax balances at face value. 1 subtracts the full cost to cash them out. */
+export function spendableWeight(inputs: PlannerInputs): number {
+  const weight = inputs.optimizeSpendableWeight;
+  if (!Number.isFinite(weight)) return 1;
+  return Math.min(1, Math.max(0, weight));
+}
+
+/**
+ * Money the maximization is aiming at.
+ * Taxes and IRMAA already paid are always subtracted. The extra tax, penalty,
+ * and IRMAA from cashing out what is still in a 401(k) or HSA count only in part.
+ */
+export function targetObjective(spendable: SpendableBreakdown, kept: number, spent: number, weight: number): number {
+  const penalties = spendable.penalty401Primary + spendable.penalty401Spouse + spendable.penaltyHsaPrimary + spendable.penaltyHsaSpouse;
+  const haircut = spendable.extraTax + penalties + spendable.irmaaFromCashout;
+  return spendable.face - weight * haircut + kept - spent;
 }
 
 /** Taxable portion of Social Security benefits. */
@@ -1133,7 +1160,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
       futureEnrollees: irmaaCashoutEnrollees(inputs, age, spouseAge).enrollees,
       futureYear: irmaaCashoutEnrollees(inputs, age, spouseAge).year,
     });
-    if (age === targetAge) targetScore = spendable.spendable + (spendable.irmaaThisYear ?? 0) + kept - spent;
+    if (age === targetAge) targetScore = targetObjective(spendable, kept, spent, spendableWeight(inputs));
     rows.push({
       year,
       age,
@@ -1297,7 +1324,7 @@ function applyAccount(
  * Distribution tax is paid from the taxable account first, then withheld from
  * Roth deposits. The score is ending balances plus cash kept, minus income tax
  * and IRMAA that were not already taken out of an account.
- * Balances still in a 401(k) or HSA are counted after the tax to cash them out.
+ * Balances still in a 401(k) or HSA are reduced by the chosen share of the cost to cash them out.
  * When maximize is on, that score is taken at the target age. Later years still
  * run through longevity, with no further Roth conversions.
  */
@@ -1529,7 +1556,7 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
         irmaa,
       },
     });
-    if (age === targetAge) targetScore = spendable.spendable + (spendable.irmaaThisYear ?? 0) + kept - spent;
+    if (age === targetAge) targetScore = targetObjective(spendable, kept, spent, spendableWeight(inputs));
   }
   return { rows, score: targetScore ?? 0 };
 }
