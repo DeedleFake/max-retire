@@ -1203,6 +1203,30 @@ function BreakoutLine({ label, value, strong }: { label: string; value: string; 
   );
 }
 
+function BracketTaxList({ slices }: { slices: { rate: number; income: number; tax: number }[] }) {
+  if (slices.length === 0) {
+    return <p className="mt-1 text-xs text-muted-foreground">No federal tax. The deduction covers this income.</p>;
+  }
+  return (
+    <dl className="mt-1 space-y-1 text-xs">
+      {slices.map((slice) => (
+        <BreakoutLine key={slice.rate} label={`${Math.round(slice.rate * 100)}% on ${money(slice.income)}`} value={money(slice.tax)} />
+      ))}
+    </dl>
+  );
+}
+
+function sameBrackets(
+  left: { rate: number; income: number; tax: number }[],
+  right: { rate: number; income: number; tax: number }[],
+): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((slice, index) => {
+    const other = right[index];
+    return other !== undefined && slice.rate === other.rate && Math.round(slice.income) === Math.round(other.income) && Math.round(slice.tax) === Math.round(other.tax);
+  });
+}
+
 function penaltySentence(label: string, age: number, balance: number, penalty: number, freeAt: number, rate: number): string {
   if (balance <= 0) return "";
   if (penalty > 0) return ` ${label}: age ${age} is under ${freeAt}, so ${Math.round(rate * 100)}% is ${money(penalty)}.`;
@@ -1272,6 +1296,29 @@ function SpendableBreakout({ row }: { row: ProjectionRow | undefined }) {
             {spouse ? penaltySentence("spouse HSA", row.spouseAge ?? 0, part.hsaSpouse, part.penaltyHsaSpouse, 65, 0.2) : ""}
           </p>
         </div>
+      </div>
+      <div className="mt-4 border-t pt-3" data-testid="panel-bracket-tax">
+        <p className="text-xs font-medium">Federal tax paid in each bracket</p>
+        <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+          Ordinary income after the deduction, and the federal tax charged at that rate. The amounts add up to the federal tax lines above.
+        </p>
+        {sameBrackets(part.federalBracketsBefore, part.federalBracketsAfter) ? (
+          <div className="mt-2">
+            <p className="text-xs text-muted-foreground">This year's income</p>
+            <BracketTaxList slices={part.federalBracketsBefore} />
+          </div>
+        ) : (
+          <div className="mt-2 grid gap-4 md:grid-cols-2">
+            <div>
+              <p className="text-xs text-muted-foreground">This year's income</p>
+              <BracketTaxList slices={part.federalBracketsBefore} />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">If the 401(k) and HSA are cashed out</p>
+              <BracketTaxList slices={part.federalBracketsAfter} />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

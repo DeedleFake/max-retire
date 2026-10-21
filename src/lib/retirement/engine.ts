@@ -378,6 +378,36 @@ export function federalTax(gross: number, filing: FilingStatus, age: number, spo
   return last.baseTax + (taxable - last.min + 1) * last.rate;
 }
 
+/** Income taxed at one ordinary rate, and the federal tax that rate charges. */
+export type FederalBracketSlice = { rate: number; income: number; tax: number };
+
+/** Federal tax split by ordinary bracket. The slices add up to `federalTax` for the same inputs. */
+export function federalBracketSlices(
+  gross: number,
+  filing: FilingStatus,
+  age: number,
+  spouseAge: number | null,
+  phaseoutIncome: number,
+): FederalBracketSlice[] {
+  const deduction = totalDeduction(filing, age, spouseAge, phaseoutIncome);
+  const taxable = Math.max(0, gross - deduction);
+  if (taxable <= 0) return [];
+  const table = bracketsFor(filing);
+  const slices: FederalBracketSlice[] = [];
+  for (let i = 0; i < table.length; i++) {
+    const bracket = table[i];
+    if (taxable < bracket.min) break;
+    if (taxable <= bracket.max || i + 1 >= table.length) {
+      const income = taxable - bracket.min + 1;
+      slices.push({ rate: bracket.rate, income, tax: income * bracket.rate });
+      break;
+    }
+    const tax = table[i + 1].baseTax - bracket.baseTax;
+    slices.push({ rate: bracket.rate, income: bracket.rate > 0 ? tax / bracket.rate : 0, tax });
+  }
+  return slices;
+}
+
 /** Gross income that fills the chosen ordinary bracket, including the deduction. */
 function bracketCeiling(ratePercent: number, filing: FilingStatus, age: number, spouseAge: number | null, phaseoutIncome: number): number {
   const deduction = totalDeduction(filing, age, spouseAge, phaseoutIncome);
@@ -467,6 +497,10 @@ export type SpendableBreakdown = {
   stateBefore: number;
   federalAfter: number;
   stateAfter: number;
+  /** Federal tax on this year's income, split by ordinary bracket. */
+  federalBracketsBefore: FederalBracketSlice[];
+  /** Federal tax if the remaining 401(k) and HSA were cashed out, split by ordinary bracket. */
+  federalBracketsAfter: FederalBracketSlice[];
   /** Extra federal and state tax from cashing out the remaining 401(k) and HSA. Never negative. */
   extraTax: number;
   penalty401Primary: number;
@@ -520,13 +554,15 @@ export function spendableTotal(args: {
   const bill = (ordinary: number, retirement: { primary: number; spouse: number }) => {
     const taxableSS = taxableSocialSecurity(args.ssIncome, args.agi + ordinary, args.filing);
     const gross = args.agi + taxableSS + ordinary;
+    const phaseout = args.agi + ordinary;
     return {
-      federal: federalTax(gross, args.filing, args.age, args.spouseAge, args.agi + ordinary),
+      federal: federalTax(gross, args.filing, args.age, args.spouseAge, phaseout),
       state: stateTax(gross, args.state, args.filing, args.age, args.spouseAge, taxableSS, {
         primary: retirement.primary,
         spouse: retirement.spouse,
         other: args.agi,
       }),
+      brackets: federalBracketSlices(gross, args.filing, args.age, args.spouseAge, phaseout),
     };
   };
   const before = bill(args.ordinary, args.retirement);
@@ -568,6 +604,8 @@ export function spendableTotal(args: {
     stateBefore: before.state,
     federalAfter: after.federal,
     stateAfter: after.state,
+    federalBracketsBefore: before.brackets,
+    federalBracketsAfter: after.brackets,
     extraTax,
     penalty401Primary,
     penalty401Spouse,
