@@ -145,11 +145,12 @@ function irmaaFeePieces(year: OptimizerYear, maxOrdinary: number, fees: number[]
     for (let index = 0; index < year.irmaaUpper.length; index++) if (magi <= year.irmaaUpper[index]) return index;
     return year.irmaaUpper.length;
   };
-  // The legal tier includes its top dollar. The next piece starts a cent later so a
-  // balance sitting on the line cannot be scored as both tiers at once.
+  // The legal tier includes its top dollar. The next piece starts a dollar later so
+  // a balance on the line cannot collect the cheap tier and the expensive tier at once.
+  // A one-cent gap was small enough for the solver to stand on both.
   const pieces: Piece[] = [];
   for (let i = 0; i < points.length - 1; i++) {
-    const lo = i === 0 ? points[i] : Math.min(points[i] + 0.01, points[i + 1]);
+    const lo = i === 0 ? points[i] : Math.min(points[i] + 1, points[i + 1]);
     const hi = points[i + 1];
     if (hi <= lo + 1e-6) continue;
     pieces.push({ lo, hi, slope: 0, intercept: fees[tierOf((lo + hi) / 2)] ?? 0 });
@@ -172,6 +173,15 @@ function crossing(lo: number, hi: number, value: (x: number) => number, target: 
   }
   if (b <= lo + 1e-4 || b >= hi - 1e-4) return null;
   return b;
+}
+
+/** Largest ordinary income whose MAGI stays at or under `magiTarget`. Null when even the top is under it. */
+function ordinaryRoom(year: OptimizerYear, magiTarget: number, ordinaryHi: number): number | null {
+  if (!(ordinaryHi > 0) || !Number.isFinite(magiTarget)) return null;
+  if (magiAt(year, 0) >= magiTarget) return 0;
+  if (magiAt(year, ordinaryHi) <= magiTarget) return null;
+  const hit = crossing(0, ordinaryHi, (value) => magiAt(year, value), magiTarget);
+  return hit === null ? 0 : Math.max(0, hit);
 }
 
 /** Exact straight pieces of income tax versus ordinary income, each inside one IRMAA tier. */
@@ -329,7 +339,9 @@ class Model {
       this.integer(z);
       this.bound(part, 0, piece.hi);
       this.le(sub(vr(part), vr(z, piece.hi)));
-      this.ge(sub(vr(part), vr(z, piece.lo)));
+      // part >= lo when z is 1, and part >= 0 when z is 0. Multiplying lo by z let a
+      // rounding error of 1e-7 pull the next tier back onto the boundary dollar.
+      this.ge(sub(vr(part), vr(z, piece.hi)).k(piece.hi - piece.lo));
       choice.v(z, 1);
       assigned.v(part, 1);
       value.v(z, piece.intercept);
@@ -527,35 +539,83 @@ export type ExactPlan = { rows: ProjectionRow[]; score: number; proven: boolean 
 
 /**
  * Conversions that maximize usable money.
- * Tax is paid from the taxable account. A plan that would owe more tax than that
- * account holds is withheld from the Roth instead; that case is the fallback model.
+ * A switched-off period does not convert. A switched-on period stops at that
+ * bracket and the IRMAA cap. Conversion tax comes from the taxable account only
+ * when that switch is on; otherwise it is withheld from the Roth deposit.
  */
 export async function solveOptimalPlan(
   inputs: PlannerInputs,
   onProgress?: (rows: ProjectionRow[]) => void,
 ): Promise<ExactPlan | null> {
   const failures: PlanFailure[] = [];
-  const covered = await solveModel(inputs, true, onProgress, failures);
-  if (covered) return covered;
-  const full = await solveModel(inputs, false, onProgress, failures);
-  if (full) return full;
+  const solved = await solveModel(inputs, onProgress, failures);
+  if (solved) return solved;
   for (const failure of failures) console.warn(`[retirement] ${failure.reason}`, failure.detail);
   return null;
 }
 
 async function solveModel(
   inputs: PlannerInputs,
-  requireCovered: boolean,
   onProgress: ((rows: ProjectionRow[]) => void) | undefined,
   failures: PlanFailure[],
 ): Promise<ExactPlan | null> {
   const years = optimizerCensus(inputs);
-  if (years.length === 0) return rejectPlan(failures, "maximization had no years to solve", { requireCovered });
+  if (years.length === 0) return rejectPlan(failures, "maximization had no years to solve", {});
   const limits = yearLimits(years);
   const big = moneyBound(years);
   const model = new Model(big);
   const live = (who: "p" | "s", key: AccountKey) => years.map((year) => (who === "p" ? year.enabledP : year.enabledS)[accountKey(key)]);
   const tiersByYear: number[][] = [];
+
+  const forceMax = (name: string, diff: Expr, ceiling: number) => {
+    const z = `${name}z`;
+    const span = Math.max(ceiling, 1);
+    model.integer(z);
+    model.bound(name, 0, span);
+    model.ge(sub(vr(name), diff));
+    model.le(sub(vr(name), diff).v(z, span).k(-span));
+    model.le(sub(vr(name), vr(z, span)));
+    return vr(name);
+  };
+
+  const addGeorgia = (prefix: string, year: OptimizerYear, limit: YearLimits, primaryRet: Expr, spouseRet: Expr, ordinaryExpr: Expr) => {
+    const exP = `${prefix}ExP`;
+    const exS = `${prefix}ExS`;
+    if (year.gaCapP > 0) {
+      const capped = add(primaryRet, con(Math.max(0, year.agi)));
+      const ub = Math.max(limit.ordinaryHi + Math.max(year.agi, 0), year.gaCapP, 1);
+      model.minOf(exP, capped, con(year.gaCapP), ub, year.gaCapP);
+    } else model.bound(exP, 0, 0);
+    if (year.gaCapS > 0) {
+      model.minOf(exS, spouseRet, con(year.gaCapS), Math.max(limit.ordinaryHi, year.gaCapS, 1), year.gaCapS);
+    } else model.bound(exS, 0, 0);
+    const raw = sub(sub(sub(add(ordinaryExpr, con(year.agi)), vr(exP)), vr(exS)), con(year.gaDeduction));
+    const span = Math.max(limit.magiHi + year.gaDeduction, 1);
+    const ga = `${prefix}Ga`;
+    const z = `${prefix}Gz`;
+    model.integer(z);
+    model.bound(ga, 0, span);
+    model.ge(sub(vr(ga), raw));
+    model.le(sub(vr(ga), raw).v(z, span).k(-span));
+    model.le(sub(vr(ga), vr(z, span)));
+    model.bound(`${prefix}St`, 0, limit.taxHi);
+    model.eq(sub(vr(`${prefix}St`), scale(vr(ga), year.gaRate)));
+  };
+
+  const incrementalTax = (
+    prefix: string,
+    year: OptimizerYear,
+    limit: YearLimits,
+    ordinaryExpr: Expr,
+    primaryRet: Expr,
+    spouseRet: Expr,
+  ) => {
+    const domain = Math.max(limit.ordinaryHi, 1);
+    model.piecewise(prefix, ordinaryExpr, incomeTaxPieces(year, domain), `${prefix}F`, domain);
+    const stateExpr = year.state === "ga" ? vr(`${prefix}St`) : con(0);
+    if (year.state === "ga") addGeorgia(prefix, year, limit, primaryRet, spouseRet, ordinaryExpr);
+    return forceMax(`${prefix}Inc`, sub(add(vr(`${prefix}F`), stateExpr), con(year.baseTax)), Math.max(limit.taxHi * 2, 1));
+  };
 
   for (let i = 0; i < years.length; i++) {
     const year = years[i];
@@ -598,6 +658,16 @@ async function solveModel(
     }
 
     const ordinary = vr(`Rp_${i}`).v(`Rs_${i}`).v(`Cp_${i}`).v(`Cs_${i}`);
+    if (year.magiCap !== null && (year.canConvertP || year.canConvertS)) {
+      const room = ordinaryRoom(year, year.magiCap - 1, Math.max(0, limit.ordinaryHi));
+      if (room !== null) {
+        const hi = Math.max(limit.ordinaryHi, 1);
+        const convHi = Math.max(limit.convHiP + limit.convHiS, 1);
+        model.integer(`CapZ_${i}`);
+        model.le(sub(add(vr(`Cp_${i}`), vr(`Cs_${i}`)), vr(`CapZ_${i}`, convHi)));
+        model.le(sub(ordinary, con(room + hi)).v(`CapZ_${i}`, hi));
+      }
+    }
     const ordinaryHi = Math.max(0, limit.ordinaryHi);
     const pieces = incomeTaxPieces(year, ordinaryHi);
     tiersByYear[i] = pieces.map((piece) => piece.tier);
@@ -619,29 +689,49 @@ async function solveModel(
     model.ge(sub(vr(`Dist_${i}`), add(vr(`Tax_${i}`), vr(`St_${i}`))).k(year.baseTax));
     const pool = year.enabledP.taxable ? add(add(begin("p", "tax"), con(contrib("p", "tax"))), add(vr(`Rp_${i}`), vr(`Rs_${i}`))) : con(0);
     const poolCap = year.enabledP.taxable ? Math.max(limit.poolHi, 1) : 0;
-    if (requireCovered) {
-      model.eq(sub(vr(`Pd_${i}`), vr(`Dist_${i}`)));
-      if (year.enabledP.taxable) model.ge(sub(pool, vr(`Dist_${i}`)));
-      model.bound(`Wp_${i}`, 0, 0);
-      model.bound(`Ws_${i}`, 0, 0);
-    } else if (year.enabledP.taxable) {
-      model.minOf(`Pd_${i}`, vr(`Dist_${i}`), pool, limit.taxHi, poolCap);
-      if (year.enabledP.rothIra && year.canConvertP) model.minOf(`Wp_${i}`, sub(vr(`Dist_${i}`), vr(`Pd_${i}`)), vr(`Cp_${i}`), limit.taxHi, Math.max(limit.convHiP, 1));
-      else model.bound(`Wp_${i}`, 0, 0);
-      if (year.spouseActive && year.enabledS.rothIra && year.canConvertS) {
-        model.minOf(`Ws_${i}`, sub(sub(vr(`Dist_${i}`), vr(`Pd_${i}`)), vr(`Wp_${i}`)), vr(`Cs_${i}`), limit.taxHi, Math.max(limit.convHiS, 1));
-      } else model.bound(`Ws_${i}`, 0, 0);
-    } else {
-      model.bound(`Pd_${i}`, 0, 0);
-      if (year.enabledP.rothIra && year.canConvertP) model.minOf(`Wp_${i}`, vr(`Dist_${i}`), vr(`Cp_${i}`), limit.taxHi, Math.max(limit.convHiP, 1));
-      else model.bound(`Wp_${i}`, 0, 0);
-      if (year.spouseActive && year.enabledS.rothIra && year.canConvertS) {
-        model.minOf(`Ws_${i}`, sub(vr(`Dist_${i}`), vr(`Wp_${i}`)), vr(`Cs_${i}`), limit.taxHi, Math.max(limit.convHiS, 1));
-      } else model.bound(`Ws_${i}`, 0, 0);
+    const withholdP = year.canConvertP && !year.payTaxP;
+    const withholdS = year.canConvertS && !year.payTaxS;
+    const coverP = year.canConvertP && year.payTaxP;
+    const coverS = year.canConvertS && year.payTaxS;
+    let due = vr(`Dist_${i}`);
+    let pConvTax = con(0);
+    let sConvTax = con(0);
+    if (withholdP || withholdS) {
+      const rmdOrd = add(vr(`Rp_${i}`), vr(`Rs_${i}`));
+      const dr = incrementalTax(`txR${i}`, year, limit, rmdOrd, vr(`Rp_${i}`), vr(`Rs_${i}`));
+      if (year.canConvertP && year.canConvertS) {
+        const through = add(rmdOrd, vr(`Cp_${i}`));
+        const dp = incrementalTax(`txP${i}`, year, limit, through, add(vr(`Rp_${i}`), vr(`Cp_${i}`)), vr(`Rs_${i}`));
+        pConvTax = forceMax(`Pc${i}`, sub(dp, dr), limit.taxHi * 2);
+        sConvTax = forceMax(`Sc${i}`, sub(vr(`Dist_${i}`), dp), limit.taxHi * 2);
+      } else if (year.canConvertP) {
+        pConvTax = forceMax(`Pc${i}`, sub(vr(`Dist_${i}`), dr), limit.taxHi * 2);
+      } else {
+        sConvTax = forceMax(`Sc${i}`, sub(vr(`Dist_${i}`), dr), limit.taxHi * 2);
+      }
+      due = dr;
+      if (coverP) due = add(due, pConvTax);
+      if (coverS) due = add(due, sConvTax);
     }
+    const dueUb = withholdP || withholdS ? limit.taxHi * 4 : limit.taxHi;
+    if (year.enabledP.taxable) model.minOf(`Pd_${i}`, due, pool, Math.max(dueUb, 1), Math.max(poolCap, 1));
+    else model.bound(`Pd_${i}`, 0, 0);
+    const requirePool = (flag: string, conv: string, convHi: number) => {
+      model.integer(flag);
+      model.le(sub(vr(conv), vr(flag, Math.max(convHi, 1))));
+      model.ge(sub(pool, due).k(Math.max(dueUb, 1)).v(flag, -Math.max(dueUb, 1)));
+    };
+    if (coverP) requirePool(`CovP_${i}`, `Cp_${i}`, limit.convHiP);
+    if (coverS) requirePool(`CovS_${i}`, `Cs_${i}`, limit.convHiS);
+    if (withholdP && year.enabledP.rothIra) model.minOf(`Wp_${i}`, pConvTax, vr(`Cp_${i}`), limit.taxHi, Math.max(limit.convHiP, 1));
+    else model.bound(`Wp_${i}`, 0, 0);
+    if (withholdS && year.enabledS.rothIra) model.minOf(`Ws_${i}`, sConvTax, vr(`Cs_${i}`), limit.taxHi, Math.max(limit.convHiS, 1));
+    else model.bound(`Ws_${i}`, 0, 0);
     model.bound(`Un_${i}`, 0, limit.taxHi);
-    model.eq(sub(add(add(add(vr(`Pd_${i}`), vr(`Wp_${i}`)), vr(`Ws_${i}`)), vr(`Un_${i}`)), vr(`Dist_${i}`)));
+    model.bound(`Ov_${i}`, 0, 100);
+    model.eq(sub(add(add(add(vr(`Pd_${i}`), vr(`Wp_${i}`)), vr(`Ws_${i}`)), vr(`Un_${i}`)), add(vr(`Dist_${i}`), vr(`Ov_${i}`))));
     model.gain(vr(`Un_${i}`, -1));
+    model.gain(vr(`Ov_${i}`, -1));
     baseTaxes += year.baseTax;
 
     const kept = (
@@ -847,7 +937,6 @@ async function solveModel(
     return rejectPlan(failures, "maximization returned no usable solution", {
       status: solverStatus(names.status),
       objective: names.objective,
-      requireCovered,
       years: years.length,
       fromAge: years[0]?.age,
       throughAge: years[years.length - 1]?.age,
@@ -869,7 +958,6 @@ async function solveModel(
       projectionScore: sim.score,
       gap,
       tolerance: 20,
-      requireCovered,
       years: years.length,
       fromAge: years[0]?.age,
       throughAge: years[years.length - 1]?.age,

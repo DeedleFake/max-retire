@@ -845,7 +845,7 @@ function projectPerson(
   }
 
   let taxPaidFromTaxable = 0;
-  if (k401.payConversionTaxFromTaxable || plannedConversion !== null) {
+  if (k401.payConversionTaxFromTaxable) {
     const taxDue = preTax + rmdConversionTax;
     const covered = Math.min(taxDue, balances.taxable);
     taxPaidFromTaxable = covered;
@@ -862,8 +862,23 @@ function projectPerson(
     }
   }
 
-  const convertible =
-    k401.enabled && retired && age >= 60 ? Math.max(0, balances.fourOhOneK - (age >= rmdAge ? balances.fourOhOneK / rmdFactor(age) : 0)) : 0;
+  const periodOn = age < rmdAge ? k401.preRmdConversion : k401.rmdConversion;
+  let convertible = k401.enabled && retired && age >= 60 && periodOn ? Math.max(0, balances.fourOhOneK - rmdAmount) : 0;
+  if (convertible > 0) {
+    const rate = age < rmdAge ? k401.preRmdConversionBracketRate : k401.rmdConversionBracketRate;
+    const cap = Math.min(bracketCeiling(rate, filing, age, spouseAge, baseIncome), irmaaCapAmount(k401.irmaaBracket, filing));
+    if (Number.isFinite(cap)) {
+      const already = ordinaryAlready + rmdAmount;
+      let extra = Math.max(0, cap - agi - already);
+      for (let i = 0; i < 5; i++) {
+        const ssTax = taxableSocialSecurity(ss, agi + already + extra, filing);
+        const next = Math.max(0, cap - agi - already - ssTax);
+        if (Math.abs(next - extra) < 1) break;
+        extra = next;
+      }
+      convertible = Math.min(convertible, extra);
+    }
+  }
   const accounts = {} as Record<AccountType, AccountYear>;
   let cashKept = 0;
   for (const type of types) {
@@ -1092,7 +1107,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
       if (inputs.accounts.taxable.enabled) {
         const taxableRate = inputs.accounts.taxable.rateOfReturn;
         depositBeforeGrowth(primary.accounts.taxable, spouse.netRmdToTaxable, taxableRate, balances, "taxable");
-        const moveTax = settleSpouseTax || inputs.spouseAccounts.fourOhOneK.payConversionTaxFromTaxable;
+        const moveTax = inputs.spouseAccounts.fourOhOneK.payConversionTaxFromTaxable;
         if (moveTax && spouse.conversionTaxWithheld > 0 && inputs.spouseAccounts.rothIra.enabled) {
           const paid = withdrawBeforeGrowth(primary.accounts.taxable, spouse.conversionTaxWithheld, taxableRate, balances, "taxable");
           depositBeforeGrowth(spouse.accounts.rothIra, paid, inputs.spouseAccounts.rothIra.rateOfReturn, spouseBalances, "rothIra");
@@ -1321,9 +1336,10 @@ function applyAccount(
 
 /**
  * Projection used by the exact optimizer.
- * Distribution tax is paid from the taxable account first, then withheld from
- * Roth deposits. The score is ending balances plus cash kept, minus income tax
- * and IRMAA that were not already taken out of an account.
+ * Distribution tax on a required minimum is paid from the taxable account up to
+ * the cash there. Conversion tax is paid from that account only when that
+ * person's switch is on, and only a plan that can cover it is kept. Otherwise
+ * the conversion tax is withheld from that person's Roth deposit.
  * Balances still in a 401(k) or HSA are reduced by the chosen share of the cost to cash them out.
  * When maximize is on, that score is taken at the target age. Later years still
  * run through longevity, with no further Roth conversions.
@@ -1358,19 +1374,26 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
     const filingNow: FilingStatus = marriedNow ? "married" : "single";
     const spouseActive = marriedNow && inputs.spouseBirthYear !== null && spouseAge !== null;
 
-    const rmdP =
-      inputs.accounts.fourOhOneK.enabled && age >= rmdStartAge(inputs.birthYear) ? primary.fourOhOneK / rmdFactor(age) : 0;
+    const rmdAgeP = rmdStartAge(inputs.birthYear);
+    const rmdAgeS = inputs.spouseBirthYear === null ? 120 : rmdStartAge(inputs.spouseBirthYear);
+    const rmdP = inputs.accounts.fourOhOneK.enabled && age >= rmdAgeP ? primary.fourOhOneK / rmdFactor(age) : 0;
     const rmdS =
-      spouseActive && inputs.spouseAccounts.fourOhOneK.enabled && spouseAge >= rmdStartAge(inputs.spouseBirthYear as number)
+      spouseActive && inputs.spouseAccounts.fourOhOneK.enabled && spouseAge !== null && spouseAge >= rmdAgeS
         ? spouse.fourOhOneK / rmdFactor(spouseAge)
         : 0;
     const roomP = inputs.accounts.fourOhOneK.enabled && retired && age >= 60 ? Math.max(0, primary.fourOhOneK - rmdP) : 0;
     const roomS =
-      spouseActive && inputs.spouseAccounts.fourOhOneK.enabled && retired && spouseAge >= 60
+      spouseActive && inputs.spouseAccounts.fourOhOneK.enabled && retired && spouseAge !== null && spouseAge >= 60
         ? Math.max(0, spouse.fourOhOneK - rmdS)
         : 0;
-    const convP = Math.min(roomP, Math.max(0, plan[year]?.primary ?? 0));
-    const convS = Math.min(roomS, Math.max(0, plan[year]?.spouse ?? 0));
+    const allowP =
+      roomP > 0 && (age < rmdAgeP ? inputs.accounts.fourOhOneK.preRmdConversion : inputs.accounts.fourOhOneK.rmdConversion);
+    const allowS =
+      roomS > 0 &&
+      spouseAge !== null &&
+      (spouseAge < rmdAgeS ? inputs.spouseAccounts.fourOhOneK.preRmdConversion : inputs.spouseAccounts.fourOhOneK.rmdConversion);
+    const convP = allowP ? Math.min(roomP, Math.max(0, plan[year]?.primary ?? 0)) : 0;
+    const convS = allowS ? Math.min(roomS, Math.max(0, plan[year]?.spouse ?? 0)) : 0;
 
     const ssIncome = age >= inputs.socialSecurityStartAge ? inputs.socialSecurityIncome : 0;
     const ordinary = rmdP + rmdS + convP + convS;
@@ -1388,17 +1411,34 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
       federalTax(agi + baseSs, filingNow, age, spouseAge, agi) +
       stateTax(agi + baseSs, inputs.state, filingNow, age, spouseAge, baseSs, { primary: 0, spouse: 0, other: agi });
     const distTax = Math.max(0, fed + st - baseTax);
+    const bill = (pRet: number, sRet: number) => {
+      const amount = pRet + sRet;
+      const ssTax = taxableSocialSecurity(ssIncome, agi + amount, filingNow);
+      const grossIncome = agi + ssTax + amount;
+      return (
+        federalTax(grossIncome, filingNow, age, spouseAge, agi + amount) +
+        stateTax(grossIncome, inputs.state, filingNow, age, spouseAge, ssTax, { primary: pRet, spouse: sRet, other: agi })
+      );
+    };
+    const at0 = bill(0, 0);
+    const atR = bill(rmdP, rmdS);
+    const atP = bill(rmdP + convP, rmdS);
+    const rmdTax = Math.min(distTax, Math.max(0, atR - at0));
+    const throughP = Math.min(distTax, Math.max(rmdTax, atP - at0));
+    const pConvTax = throughP - rmdTax;
+    const sConvTax = distTax - throughP;
+    const payP = inputs.accounts.fourOhOneK.payConversionTaxFromTaxable;
+    const payS = spouseActive && inputs.spouseAccounts.fourOhOneK.payConversionTaxFromTaxable;
+    const due = rmdTax + (payP ? pConvTax : 0) + (payS ? sConvTax : 0);
 
     const taxAcct = inputs.accounts.taxable;
     const taxContrib = baseContribution(taxAcct, "taxable", year, age, retired);
     const rmdDeposit = taxAcct.enabled ? rmdP + rmdS : 0;
     const pool = (taxAcct.enabled ? primary.taxable : 0) + taxContrib + rmdDeposit;
-    const paid = Math.min(distTax, Math.max(0, pool));
-    let rest = distTax - paid;
-    const whP = inputs.accounts.rothIra.enabled ? Math.min(rest, convP) : 0;
-    rest -= whP;
-    const whS = spouseActive && inputs.spouseAccounts.rothIra.enabled ? Math.min(rest, convS) : 0;
-    rest -= whS;
+    const paid = Math.min(due, Math.max(0, pool));
+    const whP = !payP && inputs.accounts.rothIra.enabled ? Math.min(pConvTax, convP) : 0;
+    const whS = !payS && spouseActive && inputs.spouseAccounts.rothIra.enabled ? Math.min(sConvTax, convS) : 0;
+    const rest = Math.max(0, distTax - paid - whP - whS);
 
     const pAccounts = {} as Record<AccountType, AccountYear>;
     const flow = (
@@ -1607,6 +1647,11 @@ export type OptimizerYear = {
   irmaaFeeByTier: number[];
   /** Annual IRMAA fee two years later if this year's MAGI is in tier k. Zero past longevity. */
   irmaaCashoutFeeByTier: number[];
+  /** Household MAGI ceiling for Roth conversions this year. Null when nothing caps them. */
+  magiCap: number | null;
+  /** Pay this person's conversion tax from the taxable account instead of withholding it. */
+  payTaxP: boolean;
+  payTaxS: boolean;
 };
 
 function withdrawalMode(acct: AccountSettings, age: number): { mode: "none" | "fixed" | "pct"; amount: number } {
@@ -1706,6 +1751,20 @@ export function optimizerCensus(inputs: PlannerInputs): OptimizerYear[] {
     });
     const upper = IRMAA_TIERS.filter((tier) => tier.id < 5).map((tier) => (filing === "married" ? tier.jointMax : tier.singleMax));
     const feeByTier = IRMAA_TIERS.map((tier) => (tier.partB + tier.partD) * 12 * medicareEnrollees(age, spouseAge, filing));
+    const rmdAgeP = rmdStartAge(inputs.birthYear);
+    const rmdAgeS = inputs.spouseBirthYear === null ? 120 : rmdStartAge(inputs.spouseBirthYear);
+    const phaseout = agi + baseSs;
+    const allowed = (acct: AccountSettings, personAge: number, rmdAge: number, enabled: boolean) =>
+      enabled && retired && personAge >= 60 && (personAge < rmdAge ? acct.preRmdConversion : acct.rmdConversion);
+    const finiteCaps: number[] = [];
+    const pushCap = (acct: AccountSettings, personAge: number, rmdAge: number, enabled: boolean) => {
+      if (!allowed(acct, personAge, rmdAge, enabled)) return;
+      const rate = personAge < rmdAge ? acct.preRmdConversionBracketRate : acct.rmdConversionBracketRate;
+      const ceiling = Math.min(bracketCeiling(rate, filing, age, spouseAge, phaseout), irmaaCapAmount(acct.irmaaBracket, filing));
+      if (Number.isFinite(ceiling)) finiteCaps.push(ceiling);
+    };
+    pushCap(accounts.fourOhOneK, age, rmdAgeP, enabledP.fourOhOneK);
+    if (spouseActive && spouseAge !== null) pushCap(spouseAccounts.fourOhOneK, spouseAge, rmdAgeS, enabledS.fourOhOneK);
     years.push({
       year,
       age,
@@ -1716,13 +1775,11 @@ export function optimizerCensus(inputs: PlannerInputs): OptimizerYear[] {
       ss,
       agi,
       baseTax,
-      rmdRateP: enabledP.fourOhOneK && age >= rmdStartAge(inputs.birthYear) ? 1 / rmdFactor(age) : 0,
+      rmdRateP: enabledP.fourOhOneK && age >= rmdAgeP ? 1 / rmdFactor(age) : 0,
       rmdRateS:
-        spouseActive && enabledS.fourOhOneK && spouseAge !== null && spouseAge >= rmdStartAge(inputs.spouseBirthYear as number)
-          ? 1 / rmdFactor(spouseAge)
-          : 0,
-      canConvertP: enabledP.fourOhOneK && retired && age >= 60,
-      canConvertS: spouseActive && enabledS.fourOhOneK && spouseAge !== null && retired && spouseAge >= 60,
+        spouseActive && enabledS.fourOhOneK && spouseAge !== null && spouseAge >= rmdAgeS ? 1 / rmdFactor(spouseAge) : 0,
+      canConvertP: allowed(accounts.fourOhOneK, age, rmdAgeP, enabledP.fourOhOneK),
+      canConvertS: spouseActive && spouseAge !== null && allowed(spouseAccounts.fourOhOneK, spouseAge, rmdAgeS, enabledS.fourOhOneK),
       initialP,
       initialS,
       contribP: contribs(accounts, enabledP, age),
@@ -1769,6 +1826,9 @@ export function optimizerCensus(inputs: PlannerInputs): OptimizerYear[] {
       irmaaUpper: upper,
       irmaaFeeByTier: feeByTier,
       irmaaCashoutFeeByTier: IRMAA_TIERS.map((tier) => (tier.partB + tier.partD) * 12 * irmaaCashoutEnrollees(inputs, age, spouseAge).enrollees),
+      magiCap: finiteCaps.length > 0 ? Math.min(...finiteCaps) : null,
+      payTaxP: accounts.fourOhOneK.payConversionTaxFromTaxable,
+      payTaxS: spouseActive && spouseAccounts.fourOhOneK.payConversionTaxFromTaxable,
     });
   }
   return years;

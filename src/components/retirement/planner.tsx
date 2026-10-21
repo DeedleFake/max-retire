@@ -340,14 +340,12 @@ function AccountPanel({
                         onCommit={(value) => onOptimizeSpendableWeight?.(value)}
                       />
                       <p className="text-[11px] leading-snug text-muted-foreground">
-                        Chooses each year's Roth conversion so the money left at this age is as large as possible. The slider sets whether a 401(k) or HSA dollar counts in full or after the cost to cash it out. After this age there are no more conversions. Required minimums and the withdrawals you entered still happen through longevity.
+                        Chooses each year's Roth conversion so the money left at this age is as large as possible. The slider sets whether a 401(k) or HSA dollar counts in full or after the cost to cash it out. A period that is off gets no conversion. A period that is on stops at that bracket and the IRMAA cap. Conversion tax is paid from the taxable account only when that switch is on; otherwise it is withheld from the conversion. After this age there are no more conversions. Required minimums and the withdrawals you entered still happen through longevity.
                       </p>
                     </div>
                   ) : null}
                 </div>
               ) : null}
-              {optimizeDistributions ? null : (
-                <>
               <div className="flex items-center justify-between gap-2">
                 <Label className="text-xs text-muted-foreground">Pay Roth Conversion Taxes from Taxable Account</Label>
                 <Switch
@@ -393,8 +391,6 @@ function AccountPanel({
                   onChange={(value) => onUpdate("irmaaBracket", value)}
                 />
               ) : null}
-                </>
-              )}
             </>
           ) : null}
           <NumberFieldRow
@@ -443,6 +439,30 @@ function AccountPanel({
       ) : null}
     </Card>
   );
+}
+
+function enableMaximize(inputs: PlannerInputs): PlannerInputs {
+  const seed = (accounts: PlannerInputs["accounts"]): PlannerInputs["accounts"] => {
+    const current = accounts.fourOhOneK;
+    if (current.preRmdConversion || current.rmdConversion) return accounts;
+    return {
+      ...accounts,
+      fourOhOneK: {
+        ...current,
+        preRmdConversion: true,
+        rmdConversion: true,
+        preRmdConversionBracketRate: 37,
+        rmdConversionBracketRate: 37,
+        payConversionTaxFromTaxable: true,
+      },
+    };
+  };
+  return {
+    ...inputs,
+    optimizeDistributions: true,
+    accounts: seed(inputs.accounts),
+    spouseAccounts: seed(inputs.spouseAccounts),
+  };
 }
 
 function AccountTabs({
@@ -499,7 +519,7 @@ function AccountTabs({
             optimizeDistributions={who === "primary" && type === "fourOhOneK" ? inputs.optimizeDistributions : undefined}
             onOptimizeDistributions={
               who === "primary" && type === "fourOhOneK"
-                ? (value) => onChange({ ...inputs, optimizeDistributions: value })
+                ? (value) => onChange(value ? enableMaximize(inputs) : { ...inputs, optimizeDistributions: false })
                 : undefined
             }
             optimizeThroughAge={who === "primary" && type === "fourOhOneK" ? inputs.optimizeThroughAge : undefined}
