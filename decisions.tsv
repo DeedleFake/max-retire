@@ -1,0 +1,7 @@
+ts	phase	decision	why	evidence	result
+2026-10-22T19:34:00Z	guide	added a Guide button that downloads the user guide PDF	the chat attachment never rendered, so the file had to be reachable from the app	public/maximize-my-retirement-guide.pdf, src/components/retirement/planner.tsx	PDF is served and the button is in the header
+2026-10-22T19:39:00Z	skills	vendored pstack 0.15.30 and linked each skill into the project skill directories	user asked to install pstack as skills for this project	pstack/plugin.json, AGENTS.project.md	57 skills installed
+2026-10-22T19:41:00Z	skills	set the pstack budget to large and every role to inherit-parent	user picked large and inherit-parent, then accepted that map	.cursor/rules/pstack-models.mdc	rule written
+2026-10-22T19:43:00Z	skills	did not generate a formal verification skill	the yes button hid the question, and later replies asked what the check would be instead of saying to generate it	pstack/skills/create-formal-verification-skill/SKILL.md	not generated
+2026-10-22T19:53:00Z	planner	left the final simulatePlan replay in place and changed no solver code	HiGHS searches for amounts and simulatePlan scores one finished plan. Progress replays are optional and were not removed.	src/lib/retirement/optimize.ts:952, src/lib/retirement/optimize.ts:980	no code change
+2026-10-22T19:54:43Z	log	keep decisions.tsv in the repo and append a row for each later decision	GitHub exports use the message Export from Grok, so commit history does not say why	b33a9ca, decisions.tsv	log started

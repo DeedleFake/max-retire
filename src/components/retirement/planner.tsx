@@ -1511,6 +1511,15 @@ function PlanTransfer({ inputs, onLoad }: { inputs: PlannerInputs; onLoad: (next
   return (
     <div className="ml-auto flex flex-col items-end gap-1">
       <div className="flex flex-wrap justify-end gap-1.5">
+        <a
+          href="/maximize-my-retirement-guide.pdf"
+          download="Maximize My Retirement - User Guide.pdf"
+          className={buttonClass}
+          data-testid="link-user-guide"
+        >
+          <Download className="h-3.5 w-3.5" />
+          Guide
+        </a>
         <button type="button" className={buttonClass} onClick={copy} data-testid="button-copy-plan" aria-label="Copy plan">
           <Copy className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">Copy</span>
