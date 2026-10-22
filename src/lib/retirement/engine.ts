@@ -67,6 +67,8 @@ export type PlannerInputs = {
   longevityAge: number;
   spouseLongevityAge: number;
   adjustedGrossIncome: number;
+  /** When true, adjusted gross income counts only in the first projection year. */
+  agiFirstYearOnly: boolean;
   socialSecurityIncome: number;
   socialSecurityStartAge: number;
   state: string;
@@ -220,6 +222,7 @@ export function defaultInputs(): PlannerInputs {
     longevityAge: 100,
     spouseLongevityAge: 100,
     adjustedGrossIncome: 0,
+    agiFirstYearOnly: false,
     socialSecurityIncome: 0,
     socialSecurityStartAge: 67,
     state: "GA",
@@ -293,6 +296,7 @@ export function parsePlannerInputs(text: string): PlannerInputs {
     !isFiniteNumber(plan.longevityAge) ||
     !isFiniteNumber(plan.spouseLongevityAge) ||
     !isFiniteNumber(plan.adjustedGrossIncome) ||
+    (plan.agiFirstYearOnly !== undefined && typeof plan.agiFirstYearOnly !== "boolean") ||
     !isFiniteNumber(plan.socialSecurityIncome) ||
     !isFiniteNumber(plan.socialSecurityStartAge) ||
     typeof state !== "string" ||
@@ -314,6 +318,7 @@ export function parsePlannerInputs(text: string): PlannerInputs {
     longevityAge: plan.longevityAge,
     spouseLongevityAge: plan.spouseLongevityAge,
     adjustedGrossIncome: plan.adjustedGrossIncome,
+    agiFirstYearOnly: plan.agiFirstYearOnly === true,
     socialSecurityIncome: plan.socialSecurityIncome,
     socialSecurityStartAge: plan.socialSecurityStartAge,
     state,
@@ -625,6 +630,12 @@ export function spendableWeight(inputs: PlannerInputs): number {
   const weight = inputs.optimizeSpendableWeight;
   if (!Number.isFinite(weight)) return 1;
   return Math.min(1, Math.max(0, weight));
+}
+
+/** Other income counted in a projection year. The first year is the current calendar year. */
+export function agiForYear(inputs: PlannerInputs, year: number): number {
+  if (inputs.agiFirstYearOnly && year !== CURRENT_YEAR) return 0;
+  return inputs.adjustedGrossIncome;
 }
 
 /**
@@ -1099,6 +1110,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
 
   for (let age = startAge; age <= endAge; age++) {
     const year = inputs.birthYear + age;
+    const agi = agiForYear(inputs, year);
     const marriedNow = married && inputs.marriageYear !== null && year >= inputs.marriageYear;
     const spouseAge = inputs.spouseBirthYear !== null ? year - inputs.spouseBirthYear : null;
     const retired = year >= inputs.retirementYear;
@@ -1112,7 +1124,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
       marriedNow,
       inputs.birthYear,
       marriedNow ? spouseAge : null,
-      inputs.adjustedGrossIncome,
+      agi,
       [...ACCOUNT_TYPES],
       inputs.state,
       inputs.socialSecurityIncome,
@@ -1133,7 +1145,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
         marriedNow,
         inputs.spouseBirthYear,
         age,
-        inputs.adjustedGrossIncome,
+        agi,
         ["rothIra", "hsa", "fourOhOneK"],
         inputs.state,
         inputs.socialSecurityIncome,
@@ -1162,23 +1174,23 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
     const rmdAmount = primary.rmdAmount + (spouse?.rmdAmount ?? 0);
     const conversionAmount = primary.conversionAmount + (spouse?.conversionAmount ?? 0);
     const ordinary = rmdAmount + conversionAmount;
-    const taxableSS = taxableSocialSecurity(ssIncome, inputs.adjustedGrossIncome + ordinary, filingNow);
-    const gross = inputs.adjustedGrossIncome + taxableSS + ordinary;
+    const taxableSS = taxableSocialSecurity(ssIncome, agi + ordinary, filingNow);
+    const gross = agi + taxableSS + ordinary;
     const standardDeduction = filingNow === "married" ? STANDARD_DEDUCTION.married : STANDARD_DEDUCTION.single;
     const additionalDeduction = additionalStdDeduction(filingNow, age, spouseAge);
-    const elderlyAgiDeduction = seniorBonus(filingNow, age, spouseAge, inputs.adjustedGrossIncome + ordinary);
+    const elderlyAgiDeduction = seniorBonus(filingNow, age, spouseAge, agi + ordinary);
     const totalDeductions = standardDeduction + additionalDeduction + elderlyAgiDeduction;
     const taxableIncome = Math.max(0, gross - totalDeductions);
-    const fed = federalTax(gross, filingNow, age, spouseAge, inputs.adjustedGrossIncome + ordinary);
+    const fed = federalTax(gross, filingNow, age, spouseAge, agi + ordinary);
     const st = stateTax(gross, inputs.state, filingNow, age, spouseAge, taxableSS, {
       primary: primary.rmdAmount + primary.conversionAmount,
       spouse: (spouse?.rmdAmount ?? 0) + (spouse?.conversionAmount ?? 0),
-      other: inputs.adjustedGrossIncome,
+      other: agi,
     });
     const removed = primary.taxRemoved + (spouse?.taxRemoved ?? 0);
     spent += Math.max(0, fed + st - removed);
-    const annualGross = inputs.adjustedGrossIncome + ssIncome + ordinary;
-    const irmaaMagi = inputs.adjustedGrossIncome + taxableSS + ordinary;
+    const annualGross = agi + ssIncome + ordinary;
+    const irmaaMagi = agi + taxableSS + ordinary;
     let total = 0;
     for (const type of ACCOUNT_TYPES) total += accounts[type].endBalance;
     const filingForRow: FilingStatus = filingNow;
@@ -1208,7 +1220,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
       filing: filingNow,
       state: inputs.state,
       ssIncome,
-      agi: inputs.adjustedGrossIncome,
+      agi,
       irmaaThisYear: irmaa.annualFee,
       futureEnrollees: irmaaCashoutEnrollees(inputs, age, spouseAge).enrollees,
       futureYear: irmaaCashoutEnrollees(inputs, age, spouseAge).year,
@@ -1224,7 +1236,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
       liquidBalance: spendable.spendable,
       spendable,
       taxSummary: {
-        agi: inputs.adjustedGrossIncome,
+        agi,
         ssIncome,
         taxableSS,
         rmdAmount,
@@ -1301,7 +1313,7 @@ function optimizePlan(inputs: PlannerInputs): ConversionPlan {
           person === "primary" ? row.age : (row.spouseAge ?? row.age),
           person === "primary" ? row.spouseAge : row.age,
           ordinary,
-          inputs.adjustedGrossIncome,
+          row.taxSummary.agi,
         );
         let best = current;
         let bestScore = preview.score;
@@ -1406,6 +1418,7 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
 
   for (let age = startAge; age <= endAge; age++) {
     const year = inputs.birthYear + age;
+    const agi = agiForYear(inputs, year);
     const spouseAge = inputs.spouseBirthYear !== null ? year - inputs.spouseBirthYear : null;
     const marriedNow = married && inputs.marriageYear !== null && year >= inputs.marriageYear && spouseAge !== null;
     const retired = year >= inputs.retirementYear;
@@ -1435,7 +1448,6 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
 
     const ssIncome = age >= inputs.socialSecurityStartAge ? inputs.socialSecurityIncome : 0;
     const ordinary = rmdP + rmdS + convP + convS;
-    const agi = inputs.adjustedGrossIncome;
     const taxableSS = taxableSocialSecurity(ssIncome, agi + ordinary, filingNow);
     const gross = agi + taxableSS + ordinary;
     const fed = federalTax(gross, filingNow, age, spouseAge, agi + ordinary);
@@ -1747,13 +1759,13 @@ export function optimizerCensus(inputs: PlannerInputs): OptimizerYear[] {
   const married = inputs.filingStatus === "married";
   for (let age = startAge; age <= endAge; age++) {
     const year = inputs.birthYear + age;
+    const agi = agiForYear(inputs, year);
     const spouseAge = inputs.spouseBirthYear !== null ? year - inputs.spouseBirthYear : null;
     const marriedNow = married && inputs.marriageYear !== null && year >= inputs.marriageYear && spouseAge !== null;
     const retired = year >= inputs.retirementYear;
     const filing: FilingStatus = marriedNow ? "married" : "single";
     const spouseActive = marriedNow && inputs.spouseBirthYear !== null && spouseAge !== null;
     const ss = age >= inputs.socialSecurityStartAge ? inputs.socialSecurityIncome : 0;
-    const agi = inputs.adjustedGrossIncome;
     const baseSs = taxableSocialSecurity(ss, agi, filing);
     const baseTax =
       federalTax(agi + baseSs, filing, age, spouseAge, agi) +

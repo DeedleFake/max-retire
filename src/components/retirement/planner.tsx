@@ -28,6 +28,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
@@ -716,6 +717,23 @@ function InputsForm({ inputs, onChange }: { inputs: PlannerInputs; onChange: (ne
               min={0}
               testId="input-agi"
             />
+            <div className="flex items-start justify-between gap-3 pt-1">
+              <div className="space-y-0.5">
+                <Label htmlFor="checkbox-agi-first-year" className="text-xs text-muted-foreground">
+                  Only the first year
+                </Label>
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  Checked: this amount is used in {CURRENT_YEAR} only, and later years use $0. Unchecked: it is used every year.
+                </p>
+              </div>
+              <Checkbox
+                id="checkbox-agi-first-year"
+                checked={inputs.agiFirstYearOnly}
+                onCheckedChange={(checked) => onChange({ ...inputs, agiFirstYearOnly: checked === true })}
+                data-testid="checkbox-agi-first-year"
+                className="mt-0.5"
+              />
+            </div>
           </div>
           <div className="space-y-1.5 pt-2">
             <Separator />
