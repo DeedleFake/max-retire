@@ -1178,6 +1178,9 @@ function IrmaaBreakout({ row }: { row: ProjectionRow | undefined }) {
         </div>
         <div>
           <p className="text-xs font-medium">IRMAA fee paid in {row.year}</p>
+          <p className="mt-2 text-xs">
+            Filing status for {row.year} is {row.filingStatus === "married" ? "Married" : "Single"}.
+          </p>
           {fee.enrollees === 0 ? (
             <p className="mt-2 text-xs text-muted-foreground">
               Nobody is 65 yet, so Medicare IRMAA is {money(0)}.

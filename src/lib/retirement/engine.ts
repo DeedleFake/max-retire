@@ -543,6 +543,8 @@ export function spendableTotal(args: {
   age: number;
   spouseAge: number | null;
   spouseActive: boolean;
+  /** The living taxpayer is the spouse. Their income takes the single exclusion. */
+  survivorIsSpouse?: boolean;
   filing: FilingStatus;
   state: string;
   ssIncome: number;
@@ -556,17 +558,19 @@ export function spendableTotal(args: {
   const hsaPrimary = Math.max(0, args.hsa.primary);
   const hsaSpouse = args.spouseActive ? Math.max(0, args.hsa.spouse) : 0;
   const extra = fourOhOneKPrimary + fourOhOneKSpouse + hsaPrimary + hsaSpouse;
+  const survivor = args.survivorIsSpouse === true;
   const bill = (ordinary: number, retirement: { primary: number; spouse: number }) => {
     const taxableSS = taxableSocialSecurity(args.ssIncome, args.agi + ordinary, args.filing);
     const gross = args.agi + taxableSS + ordinary;
     const phaseout = args.agi + ordinary;
+    const buckets = survivor
+      ? { primary: retirement.spouse, spouse: 0, other: args.agi }
+      : args.filing === "married"
+        ? { primary: retirement.primary, spouse: retirement.spouse, other: args.agi }
+        : { primary: retirement.primary, spouse: 0, other: args.agi };
     return {
       federal: federalTax(gross, args.filing, args.age, args.spouseAge, phaseout),
-      state: stateTax(gross, args.state, args.filing, args.age, args.spouseAge, taxableSS, {
-        primary: retirement.primary,
-        spouse: retirement.spouse,
-        other: args.agi,
-      }),
+      state: stateTax(gross, args.state, args.filing, args.age, args.spouseAge, taxableSS, buckets),
       brackets: federalBracketSlices(gross, args.filing, args.age, args.spouseAge, phaseout),
     };
   };
@@ -579,10 +583,14 @@ export function spendableTotal(args: {
         })
       : before;
   const extraTax = Math.max(0, after.federal + after.state - (before.federal + before.state));
-  const penalty401Primary = args.age < 60 ? fourOhOneKPrimary * 0.1 : 0;
-  const penalty401Spouse = args.spouseActive && args.spouseAge !== null && args.spouseAge < 60 ? fourOhOneKSpouse * 0.1 : 0;
-  const penaltyHsaPrimary = args.age < 65 ? hsaPrimary * 0.2 : 0;
-  const penaltyHsaSpouse = args.spouseActive && args.spouseAge !== null && args.spouseAge < 65 ? hsaSpouse * 0.2 : 0;
+  const penalty401Primary = !survivor && args.age < 60 ? fourOhOneKPrimary * 0.1 : 0;
+  const penalty401Spouse = survivor
+    ? args.age < 60 ? fourOhOneKSpouse * 0.1 : 0
+    : args.spouseActive && args.spouseAge !== null && args.spouseAge < 60 ? fourOhOneKSpouse * 0.1 : 0;
+  const penaltyHsaPrimary = !survivor && args.age < 65 ? hsaPrimary * 0.2 : 0;
+  const penaltyHsaSpouse = survivor
+    ? args.age < 65 ? hsaSpouse * 0.2 : 0
+    : args.spouseActive && args.spouseAge !== null && args.spouseAge < 65 ? hsaSpouse * 0.2 : 0;
   const penalties = penalty401Primary + penalty401Spouse + penaltyHsaPrimary + penaltyHsaSpouse;
   const magiFor = (ordinary: number) => {
     const taxableSS = taxableSocialSecurity(args.ssIncome, args.agi + ordinary, args.filing);
@@ -700,12 +708,11 @@ function medicareEnrollees(age: number, spouseAge: number | null, filing: Filing
 }
 
 /** People who would pay IRMAA two years after `age` if the household is still in the projection. */
-export function irmaaCashoutEnrollees(inputs: PlannerInputs, age: number, spouseAge: number | null): { year: number; enrollees: number } {
+export function irmaaCashoutEnrollees(inputs: PlannerInputs, age: number, _spouseAge: number | null): { year: number; enrollees: number } {
   const year = inputs.birthYear + age + 2;
   if (age + 2 > longevityEndAge(inputs)) return { year, enrollees: 0 };
-  const futureSpouse = spouseAge === null ? null : spouseAge + 2;
-  const married = inputs.filingStatus === "married" && inputs.marriageYear !== null && year >= inputs.marriageYear && futureSpouse !== null;
-  return { year, enrollees: medicareEnrollees(age + 2, futureSpouse, married ? "married" : "single") };
+  const home = householdYear(inputs, year);
+  return { year, enrollees: medicareEnrollees(home.taxAge, home.taxSpouseAge, home.filing) };
 }
 
 function assessIrmaa(year: number, age: number, spouseAge: number | null, filing: FilingStatus, prior: ProjectionRow | undefined): IrmaaFee {
@@ -773,7 +780,7 @@ function projectPerson(
   retired: boolean,
   marriedThisYear: boolean,
   birthYear: number,
-  spouseAge: number | null,
+  _spouseAge: number | null,
   agi: number,
   types: AccountType[],
   state: string,
@@ -781,6 +788,9 @@ function projectPerson(
   ssStartAge: number,
   ordinaryAlready: number,
   who: "primary" | "spouse",
+  taxAge: number,
+  taxSpouseAge: number | null,
+  survivorIsSpouse: boolean,
   plannedConversion: number | null = null,
 ): YearSlice {
   const filing: FilingStatus = marriedThisYear ? "married" : "single";
@@ -789,8 +799,11 @@ function projectPerson(
   const baseIncome = agi + taxableSS;
   const rmdAge = rmdStartAge(birthYear);
   const k401 = settings.fourOhOneK;
-  const retirementSplit = (mine: number) =>
-    who === "primary" ? { primary: mine, spouse: 0, other: agi } : { primary: 0, spouse: mine, other: agi };
+  const retirementSplit = (mine: number) => {
+    if (survivorIsSpouse) return who === "spouse" ? { primary: mine, spouse: 0, other: agi } : { primary: 0, spouse: 0, other: agi };
+    if (filing === "married") return who === "primary" ? { primary: mine, spouse: 0, other: agi } : { primary: 0, spouse: mine, other: agi };
+    return who === "primary" ? { primary: mine, spouse: 0, other: agi } : { primary: 0, spouse: 0, other: agi };
+  };
 
   let rmdAmount = 0;
   let netRmdToTaxable = 0;
@@ -802,16 +815,16 @@ function projectPerson(
   if (k401.enabled && age >= rmdAge) {
     const factor = rmdFactor(age);
     rmdAmount = balances.fourOhOneK / factor;
-    const fed = federalTax(baseIncome + rmdAmount, filing, age, spouseAge, baseIncome) - federalTax(baseIncome, filing, age, spouseAge, baseIncome);
+    const fed = federalTax(baseIncome + rmdAmount, filing, taxAge, taxSpouseAge, baseIncome) - federalTax(baseIncome, filing, taxAge, taxSpouseAge, baseIncome);
     const st =
-      stateTax(baseIncome + rmdAmount, state, filing, age, spouseAge, taxableSS, retirementSplit(rmdAmount)) -
-      stateTax(baseIncome, state, filing, age, spouseAge, taxableSS, retirementSplit(0));
+      stateTax(baseIncome + rmdAmount, state, filing, taxAge, taxSpouseAge, taxableSS, retirementSplit(rmdAmount)) -
+      stateTax(baseIncome, state, filing, taxAge, taxSpouseAge, taxableSS, retirementSplit(0));
     rmdTax = fed + st;
     netRmdToTaxable = rmdAmount - rmdTax;
 
     if (plannedConversion === null && k401.rmdConversion) {
       const cap = irmaaCapAmount(k401.irmaaBracket, filing);
-      const ceiling = Math.min(bracketCeiling(k401.rmdConversionBracketRate, filing, age, spouseAge, baseIncome), cap);
+      const ceiling = Math.min(bracketCeiling(k401.rmdConversionBracketRate, filing, taxAge, taxSpouseAge, baseIncome), cap);
       let extra = Math.max(0, ceiling - baseIncome - rmdAmount - ordinaryAlready);
       for (let i = 0; i < 5; i++) {
         const ssTax = taxableSocialSecurity(ss, agi + rmdAmount + ordinaryAlready + extra, filing);
@@ -824,10 +837,10 @@ function projectPerson(
         const other = agi + rmdAmount + conversion;
         const ssTax = taxableSocialSecurity(ss, other, filing);
         const gross = other + ssTax;
-        const fedAll = federalTax(gross, filing, age, spouseAge, agi) - federalTax(baseIncome, filing, age, spouseAge, agi);
+        const fedAll = federalTax(gross, filing, taxAge, taxSpouseAge, agi) - federalTax(baseIncome, filing, taxAge, taxSpouseAge, agi);
         const stAll =
-          stateTax(gross, state, filing, age, spouseAge, ssTax, retirementSplit(rmdAmount + conversion)) -
-          stateTax(baseIncome, state, filing, age, spouseAge, taxableSS, retirementSplit(0));
+          stateTax(gross, state, filing, taxAge, taxSpouseAge, ssTax, retirementSplit(rmdAmount + conversion)) -
+          stateTax(baseIncome, state, filing, taxAge, taxSpouseAge, taxableSS, retirementSplit(0));
         rmdConversionTax = fedAll + stAll - rmdTax;
         rmdConversionGross = conversion;
         netRmdConversionToRoth = conversion - rmdConversionTax;
@@ -840,7 +853,7 @@ function projectPerson(
   let preTax = 0;
   if (plannedConversion === null && k401.enabled && k401.preRmdConversion && retired && age >= 60 && age < rmdAge) {
     const cap = irmaaCapAmount(k401.irmaaBracket, filing);
-    const ceiling = Math.min(bracketCeiling(k401.preRmdConversionBracketRate, filing, age, spouseAge, baseIncome), cap);
+    const ceiling = Math.min(bracketCeiling(k401.preRmdConversionBracketRate, filing, taxAge, taxSpouseAge, baseIncome), cap);
     let extra = Math.max(0, ceiling - baseIncome - ordinaryAlready);
     for (let i = 0; i < 5; i++) {
       const ssTax = taxableSocialSecurity(ss, agi + ordinaryAlready + extra, filing);
@@ -852,10 +865,10 @@ function projectPerson(
     const other = agi + conversion;
     const ssTax = taxableSocialSecurity(ss, other, filing);
     const gross = other + ssTax;
-    const fed = federalTax(gross, filing, age, spouseAge, agi) - federalTax(baseIncome, filing, age, spouseAge, agi);
+    const fed = federalTax(gross, filing, taxAge, taxSpouseAge, agi) - federalTax(baseIncome, filing, taxAge, taxSpouseAge, agi);
     const st =
-      stateTax(gross, state, filing, age, spouseAge, ssTax, retirementSplit(conversion)) -
-      stateTax(baseIncome, state, filing, age, spouseAge, taxableSS, retirementSplit(0));
+      stateTax(gross, state, filing, taxAge, taxSpouseAge, ssTax, retirementSplit(conversion)) -
+      stateTax(baseIncome, state, filing, taxAge, taxSpouseAge, taxableSS, retirementSplit(0));
     preTax = fed + st;
     preGross = conversion;
     netPreToRoth = conversion - preTax;
@@ -866,20 +879,21 @@ function projectPerson(
     const conversion = Math.min(plannedConversion, available);
     if (conversion > 0) {
       const already = ordinaryAlready;
-      const split = (mine: number, otherRetirement: number) =>
-        who === "primary"
-          ? { primary: mine, spouse: otherRetirement, other: agi }
-          : { primary: otherRetirement, spouse: mine, other: agi };
+      const split = (mine: number, otherRetirement: number) => {
+        if (survivorIsSpouse) return who === "spouse" ? { primary: mine, spouse: 0, other: agi } : { primary: 0, spouse: 0, other: agi };
+        if (filing !== "married") return who === "primary" ? { primary: mine, spouse: 0, other: agi } : { primary: 0, spouse: 0, other: agi };
+        return who === "primary" ? { primary: mine, spouse: otherRetirement, other: agi } : { primary: otherRetirement, spouse: mine, other: agi };
+      };
       const baselineOrdinary = rmdAmount + already;
       const ssBaseline = taxableSocialSecurity(ss, agi + baselineOrdinary, filing);
       const baselineGross = agi + baselineOrdinary + ssBaseline;
       const stacked = baselineOrdinary + conversion;
       const ssTax = taxableSocialSecurity(ss, agi + stacked, filing);
       const gross = agi + stacked + ssTax;
-      const fedAll = federalTax(gross, filing, age, spouseAge, agi) - federalTax(baselineGross, filing, age, spouseAge, agi);
+      const fedAll = federalTax(gross, filing, taxAge, taxSpouseAge, agi) - federalTax(baselineGross, filing, taxAge, taxSpouseAge, agi);
       const stAll =
-        stateTax(gross, state, filing, age, spouseAge, ssTax, split(rmdAmount + conversion, already)) -
-        stateTax(baselineGross, state, filing, age, spouseAge, ssBaseline, split(rmdAmount, already));
+        stateTax(gross, state, filing, taxAge, taxSpouseAge, ssTax, split(rmdAmount + conversion, already)) -
+        stateTax(baselineGross, state, filing, taxAge, taxSpouseAge, ssBaseline, split(rmdAmount, already));
       const convTax = Math.max(0, fedAll + stAll);
       if (rmdAmount > 0) {
         rmdConversionTax = convTax;
@@ -915,7 +929,7 @@ function projectPerson(
   let convertible = k401.enabled && retired && age >= 60 && periodOn ? Math.max(0, balances.fourOhOneK - rmdAmount) : 0;
   if (convertible > 0) {
     const rate = age < rmdAge ? k401.preRmdConversionBracketRate : k401.rmdConversionBracketRate;
-    const cap = Math.min(bracketCeiling(rate, filing, age, spouseAge, baseIncome), irmaaCapAmount(k401.irmaaBracket, filing));
+    const cap = Math.min(bracketCeiling(rate, filing, taxAge, taxSpouseAge, baseIncome), irmaaCapAmount(k401.irmaaBracket, filing));
     if (Number.isFinite(cap)) {
       const already = ordinaryAlready + rmdAmount;
       let extra = Math.max(0, cap - agi - already);
@@ -1084,6 +1098,51 @@ type Simulation = {
   room: Record<number, { primary: number; spouse: number }>;
 };
 
+type HouseholdYear = {
+  spouseAge: number | null;
+  /** Spouse balances stay after death so the money is not dropped from the household. */
+  spouseAccountsActive: boolean;
+  filing: FilingStatus;
+  /** Living taxpayer. The primary while that person is alive, otherwise the surviving spouse. */
+  taxAge: number;
+  /** Second living spouse. Null on a single return. */
+  taxSpouseAge: number | null;
+  primaryAlive: boolean;
+  spouseAlive: boolean;
+};
+
+function livingTaxpayer(year: number, birthYear: number, longevityAge: number): boolean {
+  return year <= birthYear + longevityAge;
+}
+
+/** Filing status for one calendar year. The year of a death is still joint. The next year is single. Qualifying surviving spouse needs a dependent child, and this planner has no child. */
+export function householdYear(inputs: PlannerInputs, year: number): HouseholdYear {
+  const primaryAge = year - inputs.birthYear;
+  const spouseAge = inputs.spouseBirthYear === null ? null : year - inputs.spouseBirthYear;
+  const wed = inputs.filingStatus === "married" && inputs.marriageYear !== null && year >= inputs.marriageYear;
+  const primaryAlive = livingTaxpayer(year, inputs.birthYear, inputs.longevityAge);
+  const spouseAlive =
+    wed && inputs.spouseBirthYear !== null && spouseAge !== null && livingTaxpayer(year, inputs.spouseBirthYear, inputs.spouseLongevityAge);
+  const filing: FilingStatus = primaryAlive && spouseAlive ? "married" : "single";
+  const spouseAccountsActive = wed && spouseAge !== null;
+  let taxAge = primaryAge;
+  let taxSpouseAge: number | null = null;
+  if (filing === "married" && spouseAge !== null) taxSpouseAge = spouseAge;
+  else if (!primaryAlive && spouseAlive && spouseAge !== null) taxAge = spouseAge;
+  return { spouseAge, spouseAccountsActive, filing, taxAge, taxSpouseAge, primaryAlive, spouseAlive };
+}
+
+function retirementBuckets(
+  home: HouseholdYear,
+  primary: number,
+  spouse: number,
+  other: number,
+): { primary: number; spouse: number; other: number } {
+  if (home.filing === "married") return { primary, spouse, other };
+  if (!home.primaryAlive && home.spouseAlive) return { primary: spouse, spouse: 0, other };
+  return { primary, spouse: 0, other };
+}
+
 function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settleSpouseTax: boolean): Simulation {
   const rows: ProjectionRow[] = [];
   const room: Record<number, { primary: number; spouse: number }> = {};
@@ -1103,7 +1162,6 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
     fourOhOneK: inputs.spouseAccounts.fourOhOneK.enabled ? inputs.spouseAccounts.fourOhOneK.currentBalance : 0,
     taxable: 0,
   };
-  const married = inputs.filingStatus === "married";
   let kept = 0;
   let spent = 0;
   let targetScore: number | null = null;
@@ -1111,19 +1169,23 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
   for (let age = startAge; age <= endAge; age++) {
     const year = inputs.birthYear + age;
     const agi = agiForYear(inputs, year);
-    const marriedNow = married && inputs.marriageYear !== null && year >= inputs.marriageYear;
-    const spouseAge = inputs.spouseBirthYear !== null ? year - inputs.spouseBirthYear : null;
+    const home = householdYear(inputs, year);
+    const spouseAge = home.spouseAge;
+    const filingNow = home.filing;
+    const taxAge = home.taxAge;
+    const taxSpouseAge = home.taxSpouseAge;
     const retired = year >= inputs.retirementYear;
     const plannedPrimary = plan ? (plan[year]?.primary ?? 0) : null;
+    const survivorIsSpouse = !home.primaryAlive && home.spouseAlive;
     const primary = projectPerson(
       inputs.accounts,
       balances,
       year,
       age,
       retired,
-      marriedNow,
+      filingNow === "married",
       inputs.birthYear,
-      marriedNow ? spouseAge : null,
+      taxSpouseAge,
       agi,
       [...ACCOUNT_TYPES],
       inputs.state,
@@ -1131,10 +1193,13 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
       inputs.socialSecurityStartAge,
       0,
       "primary",
+      taxAge,
+      taxSpouseAge,
+      survivorIsSpouse,
       plannedPrimary,
     );
     let spouse: YearSlice | null = null;
-    if (married && marriedNow && spouseAge !== null && inputs.spouseBirthYear !== null) {
+    if (home.spouseAccountsActive && spouseAge !== null && inputs.spouseBirthYear !== null) {
       const plannedSpouse = plan ? (plan[year]?.spouse ?? 0) : null;
       spouse = projectPerson(
         inputs.spouseAccounts,
@@ -1142,9 +1207,9 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
         year,
         spouseAge,
         retired,
-        marriedNow,
+        filingNow === "married",
         inputs.spouseBirthYear,
-        age,
+        taxSpouseAge,
         agi,
         ["rothIra", "hsa", "fourOhOneK"],
         inputs.state,
@@ -1152,6 +1217,9 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
         inputs.socialSecurityStartAge,
         primary.rmdAmount + primary.conversionAmount,
         "spouse",
+        taxAge,
+        taxSpouseAge,
+        survivorIsSpouse,
         plannedSpouse,
       );
       if (inputs.accounts.taxable.enabled) {
@@ -1169,7 +1237,6 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
     room[year] = { primary: primary.convertible, spouse: spouse?.convertible ?? 0 };
     kept += primary.cashKept + (spouse?.cashKept ?? 0);
     const accounts = mergeAccounts(primary.accounts, spouse ? spouse.accounts : null);
-    const filingNow: FilingStatus = marriedNow ? "married" : "single";
     const ssIncome = age >= inputs.socialSecurityStartAge ? inputs.socialSecurityIncome : 0;
     const rmdAmount = primary.rmdAmount + (spouse?.rmdAmount ?? 0);
     const conversionAmount = primary.conversionAmount + (spouse?.conversionAmount ?? 0);
@@ -1177,16 +1244,17 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
     const taxableSS = taxableSocialSecurity(ssIncome, agi + ordinary, filingNow);
     const gross = agi + taxableSS + ordinary;
     const standardDeduction = filingNow === "married" ? STANDARD_DEDUCTION.married : STANDARD_DEDUCTION.single;
-    const additionalDeduction = additionalStdDeduction(filingNow, age, spouseAge);
-    const elderlyAgiDeduction = seniorBonus(filingNow, age, spouseAge, agi + ordinary);
+    const additionalDeduction = additionalStdDeduction(filingNow, taxAge, taxSpouseAge);
+    const elderlyAgiDeduction = seniorBonus(filingNow, taxAge, taxSpouseAge, agi + ordinary);
     const totalDeductions = standardDeduction + additionalDeduction + elderlyAgiDeduction;
     const taxableIncome = Math.max(0, gross - totalDeductions);
-    const fed = federalTax(gross, filingNow, age, spouseAge, agi + ordinary);
-    const st = stateTax(gross, inputs.state, filingNow, age, spouseAge, taxableSS, {
-      primary: primary.rmdAmount + primary.conversionAmount,
-      spouse: (spouse?.rmdAmount ?? 0) + (spouse?.conversionAmount ?? 0),
-      other: agi,
-    });
+    const fed = federalTax(gross, filingNow, taxAge, taxSpouseAge, agi + ordinary);
+    const st = stateTax(gross, inputs.state, filingNow, taxAge, taxSpouseAge, taxableSS, retirementBuckets(
+      home,
+      primary.rmdAmount + primary.conversionAmount,
+      (spouse?.rmdAmount ?? 0) + (spouse?.conversionAmount ?? 0),
+      agi,
+    ));
     const removed = primary.taxRemoved + (spouse?.taxRemoved ?? 0);
     spent += Math.max(0, fed + st - removed);
     const annualGross = agi + ssIncome + ordinary;
@@ -1195,7 +1263,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
     for (const type of ACCOUNT_TYPES) total += accounts[type].endBalance;
     const filingForRow: FilingStatus = filingNow;
     const prior = rows.find((item) => item.year === year - 2);
-    const irmaa = assessIrmaa(year, age, spouseAge, filingForRow, prior);
+    const irmaa = assessIrmaa(year, taxAge, taxSpouseAge, filingForRow, prior);
     if (irmaa.annualFee !== null) spent += irmaa.annualFee;
     const spendable = spendableTotal({
       face: total,
@@ -1214,9 +1282,10 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
         primary: primary.rmdAmount + primary.conversionAmount,
         spouse: (spouse?.rmdAmount ?? 0) + (spouse?.conversionAmount ?? 0),
       },
-      age,
-      spouseAge,
+      age: taxAge,
+      spouseAge: taxSpouseAge,
       spouseActive: spouse !== null,
+      survivorIsSpouse: !home.primaryAlive && home.spouseAlive,
       filing: filingNow,
       state: inputs.state,
       ssIncome,
@@ -1300,6 +1369,7 @@ function optimizePlan(inputs: PlannerInputs): ConversionPlan {
   for (let pass = 0; pass < 2; pass++) {
     preview = runProjection(inputs, plan, true);
     for (const row of preview.rows) {
+      const home = householdYear(inputs, row.year);
       const who: Array<"primary" | "spouse"> = ["primary", "spouse"];
       for (const person of who) {
         const room = preview.room[row.year]?.[person] ?? 0;
@@ -1309,9 +1379,9 @@ function optimizePlan(inputs: PlannerInputs): ConversionPlan {
         const ordinary = Math.max(0, row.taxSummary.rmdAmount + other);
         const options = conversionCandidates(
           room,
-          row.filingStatus,
-          person === "primary" ? row.age : (row.spouseAge ?? row.age),
-          person === "primary" ? row.spouseAge : row.age,
+          home.filing,
+          home.taxAge,
+          home.taxSpouseAge,
           ordinary,
           row.taxSummary.agi,
         );
@@ -1411,7 +1481,6 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
     fourOhOneK: inputs.spouseAccounts.fourOhOneK.enabled ? inputs.spouseAccounts.fourOhOneK.currentBalance : 0,
     taxable: 0,
   };
-  const married = inputs.filingStatus === "married";
   let kept = 0;
   let spent = 0;
   let targetScore: number | null = null;
@@ -1419,11 +1488,13 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
   for (let age = startAge; age <= endAge; age++) {
     const year = inputs.birthYear + age;
     const agi = agiForYear(inputs, year);
-    const spouseAge = inputs.spouseBirthYear !== null ? year - inputs.spouseBirthYear : null;
-    const marriedNow = married && inputs.marriageYear !== null && year >= inputs.marriageYear && spouseAge !== null;
+    const home = householdYear(inputs, year);
+    const spouseAge = home.spouseAge;
+    const filingNow = home.filing;
+    const taxAge = home.taxAge;
+    const taxSpouseAge = home.taxSpouseAge;
     const retired = year >= inputs.retirementYear;
-    const filingNow: FilingStatus = marriedNow ? "married" : "single";
-    const spouseActive = marriedNow && inputs.spouseBirthYear !== null && spouseAge !== null;
+    const spouseActive = home.spouseAccountsActive;
 
     const rmdAgeP = rmdStartAge(inputs.birthYear);
     const rmdAgeS = inputs.spouseBirthYear === null ? 120 : rmdStartAge(inputs.spouseBirthYear);
@@ -1450,24 +1521,28 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
     const ordinary = rmdP + rmdS + convP + convS;
     const taxableSS = taxableSocialSecurity(ssIncome, agi + ordinary, filingNow);
     const gross = agi + taxableSS + ordinary;
-    const fed = federalTax(gross, filingNow, age, spouseAge, agi + ordinary);
-    const st = stateTax(gross, inputs.state, filingNow, age, spouseAge, taxableSS, {
-      primary: rmdP + convP,
-      spouse: rmdS + convS,
-      other: agi,
-    });
+    const fed = federalTax(gross, filingNow, taxAge, taxSpouseAge, agi + ordinary);
+    const st = stateTax(
+      gross,
+      inputs.state,
+      filingNow,
+      taxAge,
+      taxSpouseAge,
+      taxableSS,
+      retirementBuckets(home, rmdP + convP, rmdS + convS, agi),
+    );
     const baseSs = taxableSocialSecurity(ssIncome, agi, filingNow);
     const baseTax =
-      federalTax(agi + baseSs, filingNow, age, spouseAge, agi) +
-      stateTax(agi + baseSs, inputs.state, filingNow, age, spouseAge, baseSs, { primary: 0, spouse: 0, other: agi });
+      federalTax(agi + baseSs, filingNow, taxAge, taxSpouseAge, agi) +
+      stateTax(agi + baseSs, inputs.state, filingNow, taxAge, taxSpouseAge, baseSs, { primary: 0, spouse: 0, other: agi });
     const distTax = Math.max(0, fed + st - baseTax);
     const bill = (pRet: number, sRet: number) => {
       const amount = pRet + sRet;
       const ssTax = taxableSocialSecurity(ssIncome, agi + amount, filingNow);
       const grossIncome = agi + ssTax + amount;
       return (
-        federalTax(grossIncome, filingNow, age, spouseAge, agi + amount) +
-        stateTax(grossIncome, inputs.state, filingNow, age, spouseAge, ssTax, { primary: pRet, spouse: sRet, other: agi })
+        federalTax(grossIncome, filingNow, taxAge, taxSpouseAge, agi + amount) +
+        stateTax(grossIncome, inputs.state, filingNow, taxAge, taxSpouseAge, ssTax, retirementBuckets(home, pRet, sRet, agi))
       );
     };
     const at0 = bill(0, 0);
@@ -1585,7 +1660,7 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
     let total = 0;
     for (const type of ACCOUNT_TYPES) total += accounts[type].endBalance;
     const prior = rows.find((item) => item.year === year - 2);
-    const irmaa = assessIrmaa(year, age, spouseAge, filingNow, prior);
+    const irmaa = assessIrmaa(year, taxAge, taxSpouseAge, filingNow, prior);
     if (irmaa.annualFee !== null) spent += irmaa.annualFee;
     const spendable = spendableTotal({
       face: total,
@@ -1601,9 +1676,10 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
       },
       ordinary,
       retirement: { primary: rmdP + convP, spouse: rmdS + convS },
-      age,
-      spouseAge,
+      age: taxAge,
+      spouseAge: taxSpouseAge,
       spouseActive,
+      survivorIsSpouse: !home.primaryAlive && home.spouseAlive,
       filing: filingNow,
       state: inputs.state,
       ssIncome,
@@ -1613,8 +1689,8 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
       futureYear: irmaaCashoutEnrollees(inputs, age, spouseAge).year,
     });
     const standardDeduction = filingNow === "married" ? STANDARD_DEDUCTION.married : STANDARD_DEDUCTION.single;
-    const additionalDeduction = additionalStdDeduction(filingNow, age, spouseAge);
-    const elderlyAgiDeduction = seniorBonus(filingNow, age, spouseAge, agi + ordinary);
+    const additionalDeduction = additionalStdDeduction(filingNow, taxAge, taxSpouseAge);
+    const elderlyAgiDeduction = seniorBonus(filingNow, taxAge, taxSpouseAge, agi + ordinary);
     const totalDeductions = standardDeduction + additionalDeduction + elderlyAgiDeduction;
     rows.push({
       year,
@@ -1656,6 +1732,11 @@ export type OptimizerYear = {
   age: number;
   spouseAge: number | null;
   filing: FilingStatus;
+  /** Age for tax, deductions, and Medicare. The spouse's age when only the spouse is alive. `age` stays chronological for RMDs. */
+  taxAge: number;
+  taxSpouseAge: number | null;
+  primaryAlive: boolean;
+  spouseAlive: boolean;
   spouseActive: boolean;
   retired: boolean;
   ss: number;
@@ -1756,22 +1837,23 @@ export function optimizerCensus(inputs: PlannerInputs): OptimizerYear[] {
     fourOhOneK: inputs.spouseAccounts.fourOhOneK.enabled ? inputs.spouseAccounts.fourOhOneK.currentBalance : 0,
     taxable: 0,
   };
-  const married = inputs.filingStatus === "married";
   for (let age = startAge; age <= endAge; age++) {
     const year = inputs.birthYear + age;
     const agi = agiForYear(inputs, year);
-    const spouseAge = inputs.spouseBirthYear !== null ? year - inputs.spouseBirthYear : null;
-    const marriedNow = married && inputs.marriageYear !== null && year >= inputs.marriageYear && spouseAge !== null;
+    const home = householdYear(inputs, year);
+    const spouseAge = home.spouseAge;
     const retired = year >= inputs.retirementYear;
-    const filing: FilingStatus = marriedNow ? "married" : "single";
-    const spouseActive = marriedNow && inputs.spouseBirthYear !== null && spouseAge !== null;
+    const filing = home.filing;
+    const taxAge = home.taxAge;
+    const taxSpouseAge = home.taxSpouseAge;
+    const spouseActive = home.spouseAccountsActive;
     const ss = age >= inputs.socialSecurityStartAge ? inputs.socialSecurityIncome : 0;
     const baseSs = taxableSocialSecurity(ss, agi, filing);
     const baseTax =
-      federalTax(agi + baseSs, filing, age, spouseAge, agi) +
-      stateTax(agi + baseSs, inputs.state, filing, age, spouseAge, baseSs, { primary: 0, spouse: 0, other: agi });
-    const both = filing === "married" && spouseAge !== null && age >= 65 && spouseAge >= 65;
-    const any = age >= 65 || (spouseAge !== null && spouseAge >= 65);
+      federalTax(agi + baseSs, filing, taxAge, taxSpouseAge, agi) +
+      stateTax(agi + baseSs, inputs.state, filing, taxAge, taxSpouseAge, baseSs, { primary: 0, spouse: 0, other: agi });
+    const both = filing === "married" && taxSpouseAge !== null && taxAge >= 65 && taxSpouseAge >= 65;
+    const any = taxAge >= 65 || (taxSpouseAge !== null && taxSpouseAge >= 65);
     const senior = !any ? "none" : both ? "both" : "one";
     const accounts = inputs.accounts;
     const spouseAccounts = inputs.spouseAccounts;
@@ -1800,7 +1882,7 @@ export function optimizerCensus(inputs: PlannerInputs): OptimizerYear[] {
       taxable: enabled.taxable ? baseContribution(src.taxable, "taxable", year, personAge, retired) : 0,
     });
     const upper = IRMAA_TIERS.filter((tier) => tier.id < 5).map((tier) => (filing === "married" ? tier.jointMax : tier.singleMax));
-    const feeByTier = IRMAA_TIERS.map((tier) => (tier.partB + tier.partD) * 12 * medicareEnrollees(age, spouseAge, filing));
+    const feeByTier = IRMAA_TIERS.map((tier) => (tier.partB + tier.partD) * 12 * medicareEnrollees(taxAge, taxSpouseAge, filing));
     const rmdAgeP = rmdStartAge(inputs.birthYear);
     const rmdAgeS = inputs.spouseBirthYear === null ? 120 : rmdStartAge(inputs.spouseBirthYear);
     const phaseout = agi + baseSs;
@@ -1810,7 +1892,7 @@ export function optimizerCensus(inputs: PlannerInputs): OptimizerYear[] {
     const pushCap = (acct: AccountSettings, personAge: number, rmdAge: number, enabled: boolean) => {
       if (!allowed(acct, personAge, rmdAge, enabled)) return;
       const rate = personAge < rmdAge ? acct.preRmdConversionBracketRate : acct.rmdConversionBracketRate;
-      const ceiling = Math.min(bracketCeiling(rate, filing, age, spouseAge, phaseout), irmaaCapAmount(acct.irmaaBracket, filing));
+      const ceiling = Math.min(bracketCeiling(rate, filing, taxAge, taxSpouseAge, phaseout), irmaaCapAmount(acct.irmaaBracket, filing));
       if (Number.isFinite(ceiling)) finiteCaps.push(ceiling);
     };
     pushCap(accounts.fourOhOneK, age, rmdAgeP, enabledP.fourOhOneK);
@@ -1820,6 +1902,10 @@ export function optimizerCensus(inputs: PlannerInputs): OptimizerYear[] {
       age,
       spouseAge,
       filing,
+      taxAge,
+      taxSpouseAge,
+      primaryAlive: home.primaryAlive,
+      spouseAlive: home.spouseAlive,
       spouseActive,
       retired,
       ss,
@@ -1863,16 +1949,16 @@ export function optimizerCensus(inputs: PlannerInputs): OptimizerYear[] {
       seniorHigh: seniorRow(senior === "both").phaseoutEnd,
       seniorFull: seniorRow(senior === "both").amount,
       seniorSlope: seniorRow(senior === "both").amount / (seniorRow(senior === "both").phaseoutEnd - seniorRow(senior === "both").phaseoutStart),
-      fixedDeduction: (filing === "married" ? STANDARD_DEDUCTION.married : STANDARD_DEDUCTION.single) + additionalStdDeduction(filing, age, spouseAge),
+      fixedDeduction: (filing === "married" ? STANDARD_DEDUCTION.married : STANDARD_DEDUCTION.single) + additionalStdDeduction(filing, taxAge, taxSpouseAge),
       federalLines: federalSupportLines(filing),
       state: inputs.state === "GA" ? "ga" : stateSupportLines(inputs.state, filing).length > 0 ? "brackets" : "none",
       stateCode: inputs.state,
       gaRate: GEORGIA.rate,
       gaDeduction: georgiaDeduction(filing),
-      gaCapP: georgiaRetirementCap(age),
-      gaCapS: filing === "married" && spouseAge !== null ? georgiaRetirementCap(spouseAge) : 0,
+      gaCapP: georgiaRetirementCap(taxAge),
+      gaCapS: filing === "married" && taxSpouseAge !== null ? georgiaRetirementCap(taxSpouseAge) : 0,
       stateLines: stateSupportLines(inputs.state, filing),
-      enrollees: medicareEnrollees(age, spouseAge, filing),
+      enrollees: medicareEnrollees(taxAge, taxSpouseAge, filing),
       irmaaUpper: upper,
       irmaaFeeByTier: feeByTier,
       irmaaCashoutFeeByTier: IRMAA_TIERS.map((tier) => (tier.partB + tier.partD) * 12 * irmaaCashoutEnrollees(inputs, age, spouseAge).enrollees),

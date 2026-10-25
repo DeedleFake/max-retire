@@ -112,14 +112,20 @@ function magiAt(year: OptimizerYear, ordinary: number): number {
   return other + taxableSocialSecurity(year.ss, other, year.filing);
 }
 
+/** The living taxpayer's retirement income takes the Georgia exclusion. A dead spouse's distributions do not. */
+function retirementForExclusion(year: OptimizerYear, primaryRet: Expr, spouseRet: Expr): { own: Expr; other: Expr } {
+  if (!year.primaryAlive && year.spouseAlive) return { own: spouseRet, other: primaryRet };
+  return { own: primaryRet, other: spouseRet };
+}
+
 /** Federal tax, plus state tax where it depends only on the ordinary-income total. */
 function incomeTaxAt(year: OptimizerYear, ordinary: number): number {
   const other = year.agi + ordinary;
   const ssTax = taxableSocialSecurity(year.ss, other, year.filing);
   const gross = other + ssTax;
-  const federal = federalTax(gross, year.filing, year.age, year.spouseAge, other);
+  const federal = federalTax(gross, year.filing, year.taxAge, year.taxSpouseAge, other);
   if (year.state !== "brackets") return federal;
-  return federal + stateTax(gross, year.stateCode, year.filing, year.age, year.spouseAge, ssTax);
+  return federal + stateTax(gross, year.stateCode, year.filing, year.taxAge, year.taxSpouseAge, ssTax);
 }
 
 function tierAt(year: OptimizerYear, ordinary: number): number {
@@ -467,7 +473,7 @@ function yearLimits(years: OptimizerYear[]): YearLimits[] {
     const ssHi = Math.min(year.ss, 0.85 * year.ss);
     const magiHi = year.agi + ssHi + ordinaryHi;
     const phaseout = year.agi + ordinaryHi;
-    const fedHi = federalTax(Math.max(magiHi, year.agi), year.filing, year.age, year.spouseAge, phaseout);
+    const fedHi = federalTax(Math.max(magiHi, year.agi), year.filing, year.taxAge, year.taxSpouseAge, phaseout);
     let stateHi = 0;
     if (year.state === "ga") stateHi = year.gaRate * Math.max(0, magiHi);
     else if (year.state === "brackets") {
@@ -581,13 +587,14 @@ async function solveModel(
   const addGeorgia = (prefix: string, year: OptimizerYear, limit: YearLimits, primaryRet: Expr, spouseRet: Expr, ordinaryExpr: Expr) => {
     const exP = `${prefix}ExP`;
     const exS = `${prefix}ExS`;
+    const retirement = retirementForExclusion(year, primaryRet, spouseRet);
     if (year.gaCapP > 0) {
-      const capped = add(primaryRet, con(Math.max(0, year.agi)));
+      const capped = add(retirement.own, con(Math.max(0, year.agi)));
       const ub = Math.max(limit.ordinaryHi + Math.max(year.agi, 0), year.gaCapP, 1);
       model.minOf(exP, capped, con(year.gaCapP), ub, year.gaCapP);
     } else model.bound(exP, 0, 0);
     if (year.gaCapS > 0) {
-      model.minOf(exS, spouseRet, con(year.gaCapS), Math.max(limit.ordinaryHi, year.gaCapS, 1), year.gaCapS);
+      model.minOf(exS, retirement.other, con(year.gaCapS), Math.max(limit.ordinaryHi, year.gaCapS, 1), year.gaCapS);
     } else model.bound(exS, 0, 0);
     const raw = sub(sub(sub(add(ordinaryExpr, con(year.agi)), vr(exP)), vr(exS)), con(year.gaDeduction));
     const span = Math.max(limit.magiHi + year.gaDeduction, 1);
@@ -676,10 +683,11 @@ async function solveModel(
     const income = add(ordinary, con(year.agi));
     model.bound(`St_${i}`, 0, limit.taxHi);
     if (year.state === "ga") {
+      const retirement = retirementForExclusion(year, add(vr(`Rp_${i}`), vr(`Cp_${i}`)), add(vr(`Rs_${i}`), vr(`Cs_${i}`)));
       model.bound(`ExP_${i}`, 0, Math.max(0, year.gaCapP));
       model.bound(`ExS_${i}`, 0, Math.max(0, year.gaCapS));
-      model.le(sub(vr(`ExP_${i}`), add(add(vr(`Rp_${i}`), vr(`Cp_${i}`)), con(year.agi))));
-      model.le(sub(vr(`ExS_${i}`), add(vr(`Rs_${i}`), vr(`Cs_${i}`))));
+      model.le(sub(vr(`ExP_${i}`), add(retirement.own, con(year.agi))));
+      model.le(sub(vr(`ExS_${i}`), retirement.other));
       model.bound(`Ga_${i}`, 0, Math.max(0, limit.magiHi));
       model.ge(sub(vr(`Ga_${i}`), sub(sub(sub(income, vr(`ExP_${i}`)), vr(`ExS_${i}`)), con(year.gaDeduction))));
       model.ge(sub(vr(`St_${i}`), scale(vr(`Ga_${i}`), year.gaRate)));
@@ -840,10 +848,15 @@ async function solveModel(
       model.gain(vr(`Lf_${last}`, -weight));
       if (year.state === "ga") {
         const income = add(add(ordinary, pretax), con(year.agi));
+        const retirement = retirementForExclusion(
+          year,
+          add(add(vr(`Rp_${last}`), vr(`Cp_${last}`)), l401p),
+          add(add(vr(`Rs_${last}`), vr(`Cs_${last}`)), l401s),
+        );
         model.bound(`ExP2_${last}`, 0, Math.max(0, year.gaCapP));
         model.bound(`ExS2_${last}`, 0, Math.max(0, year.gaCapS));
-        model.le(sub(vr(`ExP2_${last}`), add(add(add(vr(`Rp_${last}`), vr(`Cp_${last}`)), l401p), con(year.agi))));
-        model.le(sub(vr(`ExS2_${last}`), add(add(vr(`Rs_${last}`), vr(`Cs_${last}`)), l401s)));
+        model.le(sub(vr(`ExP2_${last}`), add(retirement.own, con(year.agi))));
+        model.le(sub(vr(`ExS2_${last}`), retirement.other));
         model.bound(`Ga2_${last}`, 0, model.big);
         model.ge(sub(vr(`Ga2_${last}`), sub(sub(sub(income, vr(`ExP2_${last}`)), vr(`ExS2_${last}`)), con(year.gaDeduction))));
         model.bound(`St2_${last}`, 0, model.big);
@@ -860,10 +873,10 @@ async function solveModel(
         model.gain(scale(sub(vr(`Ib_${last}`), vr(`Ia_${last}`)), weight));
       }
     }
-    if (weight > 0 && year.age < 60) model.gain(scale(l401p, -0.1 * weight));
-    if (weight > 0 && year.spouseActive && year.spouseAge !== null && year.spouseAge < 60) model.gain(scale(l401s, -0.1 * weight));
-    if (weight > 0 && year.age < 65) model.gain(scale(lhsaP, -0.2 * weight));
-    if (weight > 0 && year.spouseActive && year.spouseAge !== null && year.spouseAge < 65) model.gain(scale(lhsaS, -0.2 * weight));
+    if (weight > 0 && year.primaryAlive && year.age < 60) model.gain(scale(l401p, -0.1 * weight));
+    if (weight > 0 && year.spouseAlive && year.spouseAge !== null && year.spouseAge < 60) model.gain(scale(l401s, -0.1 * weight));
+    if (weight > 0 && year.primaryAlive && year.age < 65) model.gain(scale(lhsaP, -0.2 * weight));
+    if (weight > 0 && year.spouseAlive && year.spouseAge !== null && year.spouseAge < 65) model.gain(scale(lhsaS, -0.2 * weight));
   }
 
   for (const who of ["p", "s"] as const) {
