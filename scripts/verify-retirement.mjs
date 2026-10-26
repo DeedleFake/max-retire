@@ -28,6 +28,11 @@ async function pageReady(page) {
   const title = (await page.getByTestId("text-app-title").innerText()).trim();
   if (title !== "Maximize My Retirement") throw new Error(`title was ${JSON.stringify(title)}`);
   await page.getByTestId("row-summary-2026").waitFor({ timeout: 20000 });
+  await page.waitForFunction(() => {
+    const button = document.querySelector("[data-testid='button-save-plan']");
+    if (!button) return false;
+    return Object.keys(button).some((key) => key.startsWith("__reactProps"));
+  }, null, { timeout: 20000 });
 }
 
 async function withPage(fn) {
@@ -177,10 +182,94 @@ async function driveGuide(page) {
   const pdfPath = join(dir, "guide.pdf");
   await download.saveAs(pdfPath);
   const bytes = readFileSync(pdfPath);
+  const filename = download.suggestedFilename();
+  const title = "Maximize My Retirement User's Guide";
   await page.screenshot({ path: join(dir, "page.png"), fullPage: false });
-  writeFileSync(join(dir, "action.json"), JSON.stringify({ bytes: bytes.length, feature: "guide" }, null, 2));
+  writeFileSync(
+    join(dir, "action.json"),
+    JSON.stringify({ bytes: bytes.length, filename, title, feature: "guide" }, null, 2),
+  );
   if (bytes.length < 1000 || bytes.subarray(0, 4).toString() !== "%PDF") throw new Error("Guide did not download a PDF");
-  console.log(JSON.stringify({ ok: true, feature: "guide", bytes: bytes.length, evidence: dir }));
+  if (filename !== `${title}.pdf`) throw new Error(`Guide download name was ${JSON.stringify(filename)}`);
+  if (!bytes.includes(Buffer.from(title))) throw new Error("Guide PDF title was not in the file");
+  console.log(JSON.stringify({ ok: true, feature: "guide", bytes: bytes.length, filename, evidence: dir }));
+}
+
+async function ageCell(page, testId) {
+  return (await page.getByTestId(testId).locator("td").nth(1).innerText()).trim();
+}
+
+async function driveYearDisplay(page) {
+  const dir = evidenceDir("year-display");
+  const spendableYear = (await page.getByTestId("text-spendable-year").innerText()).trim();
+  const bracketYear = (await page.getByTestId("text-bracket-year").innerText()).trim();
+  const bracketFiling = (await page.getByTestId("text-bracket-filing").innerText()).trim();
+  const age2026 = await ageCell(page, "row-summary-2026");
+  const longevity = page.getByTestId("input-longevity-age");
+  await longevity.click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Backspace");
+  await page.keyboard.type("80", { delay: 30 });
+  await page.waitForTimeout(80);
+  await page.keyboard.press("Tab");
+  await page.waitForFunction(
+    () => document.querySelector("[data-testid='input-longevity-age']")?.value === "80",
+    null,
+    { timeout: 5000 },
+  );
+  const age2035 = await ageCell(page, "row-summary-2035");
+  const age2036 = await ageCell(page, "row-summary-2036");
+  await page.getByTestId("row-summary-2036").click();
+  const selectedYear = (await page.getByTestId("text-bracket-year").innerText()).trim();
+  const selectedFiling = (await page.getByTestId("text-bracket-filing").innerText()).trim();
+  const ages = {};
+  const tabs = [
+    ["summary", "row-summary-2036"],
+    ["rothIra", "row-rothIra-2036"],
+    ["hsa", "row-hsa-2036"],
+    ["401k", "row-fourOhOneK-2036"],
+    ["taxable", "row-taxable-2036"],
+  ];
+  for (const [tab, rowId] of tabs) {
+    const tabId = tab === "summary" ? "tab-summary" : `tab-table-${tab === "401k" ? "401k" : tab}`;
+    await page.getByTestId(tabId).click();
+    ages[tab] = await ageCell(page, rowId);
+  }
+  await page.getByTestId("tab-table-401k").click();
+  await page.getByTestId("row-fourOhOneK-2036").click();
+  const filingLine = (await page.getByText("Filing status for 2036 is").innerText()).trim();
+  await page.screenshot({ path: join(dir, "page.png"), fullPage: false });
+  const proof = {
+    feature: "year-display",
+    spendableYear,
+    bracketYear,
+    bracketFiling,
+    age2026,
+    longevity: await longevity.inputValue(),
+    age2035,
+    age2036,
+    selectedYear,
+    selectedFiling,
+    ages,
+    filingLine,
+  };
+  writeFileSync(join(dir, "action.json"), JSON.stringify(proof, null, 2));
+  if (spendableYear !== "2026" || bracketYear !== "2026") throw new Error("the first year labels were not 2026");
+  if (bracketFiling !== "These taxes are calculated for Married Filing Jointly.") {
+    throw new Error(`first filing line was ${JSON.stringify(bracketFiling)}`);
+  }
+  if (age2026 !== "71/66") throw new Error(`2026 age was ${JSON.stringify(age2026)}`);
+  if (age2035 !== "80/75") throw new Error(`2035 age was ${JSON.stringify(age2035)}`);
+  if (age2036 !== "(81)/76") throw new Error(`2036 summary age was ${JSON.stringify(age2036)}`);
+  for (const [tab, value] of Object.entries(ages)) {
+    if (value !== "(81)/76") throw new Error(`${tab} age was ${JSON.stringify(value)}`);
+  }
+  if (selectedYear !== "2036") throw new Error(`selected year was ${JSON.stringify(selectedYear)}`);
+  if (selectedFiling !== "These taxes are calculated for a Single filing.") {
+    throw new Error(`2036 filing line was ${JSON.stringify(selectedFiling)}`);
+  }
+  if (filingLine !== "Filing status for 2036 is Single.") throw new Error(`IRMAA line was ${JSON.stringify(filingLine)}`);
+  console.log(JSON.stringify({ ok: true, feature: "year-display", evidence: dir }));
 }
 
 const drives = {
@@ -188,6 +277,7 @@ const drives = {
   agi: driveAgi,
   "save-load": driveSaveLoad,
   guide: driveGuide,
+  "year-display": driveYearDisplay,
 };
 
 async function main() {

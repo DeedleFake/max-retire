@@ -30,4 +30,5 @@ Read this index, then use one feature file as the recipe. The helper is `node sc
 - [Adjusted gross income](./agi.md) sets AGI and checks Only the first year against two summary years.
 - [Save and load](./save-load.md) downloads the plan file and loads that same file back.
 - [Guide](./guide.md) downloads the user guide PDF from the header.
+- [Year display](./year-display.md) reads the year lines, the Age column after a death, and the filing sentence for that later year.
 - [Maximize ending money](./maximize.md) turns the maximizer on and waits for a finished status. No helper command. The solver can take about 60 seconds.

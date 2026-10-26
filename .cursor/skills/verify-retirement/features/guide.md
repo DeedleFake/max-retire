@@ -17,8 +17,8 @@ Preconditions:
 - Doctor is ok.
 
 - **Download.** Choose the link `link-user-guide`. The browser downloads a file.
-- **Check the file.** The bytes start with `%PDF` and the file is longer than 1000 bytes.
-- **Proof.** Run `node scripts/verify-retirement.mjs drive guide`. It writes `artifacts/verify-retirement/guide/guide.pdf`, `action.json`, and `page.png`. `action.json` field `bytes` is the PDF size.
+- **Check the file.** The saved name is `Maximize My Retirement User's Guide.pdf`. The bytes start with `%PDF`, the file is longer than 1000 bytes, and the bytes include the title `Maximize My Retirement User's Guide`.
+- **Proof.** Run `node scripts/verify-retirement.mjs drive guide`. It writes `artifacts/verify-retirement/guide/guide.pdf`, `action.json`, and `page.png`. `action.json` fields `bytes`, `filename`, and `title` are the PDF size, the saved name, and that title.
 
 ## Gotchas
 

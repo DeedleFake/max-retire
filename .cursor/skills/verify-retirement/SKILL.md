@@ -23,7 +23,7 @@ If the doctor report has `"ok": false` because nothing is listening, start the s
 node scripts/verify-retirement.mjs launch
 ```
 
-Wait until `doctor` prints `"ok": true` and `"title": "Maximize My Retirement"`. Ready means the heading and a `row-summary-<year>` row are visible. A TCP accept is not ready.
+Wait until `doctor` prints `"ok": true` and `"title": "Maximize My Retirement"`. Ready means the heading, a `row-summary-<year>` row, and the Save button's client handler are all present. The heading and the row are in the server HTML before a click does anything. A TCP accept is not ready.
 
 `launch` runs `npm run dev` in `/workspace`, which is Vite on `0.0.0.0:8080`. It records the child pid in `artifacts/verify-retirement/run/server.pid`. If that file already exists, `launch` does not start a second server.
 
@@ -31,7 +31,7 @@ If doctor is already ok, do not launch. The preview already owns 8080.
 
 ## Doctor
 
-Run `node scripts/verify-retirement.mjs doctor` before any drive when the page looks wrong. It writes `artifacts/verify-retirement/doctor.json` and exits 0 only when a private browser can read the heading `Maximize My Retirement` and the first summary row. `ownedByThisRun` is true only when this verification run started the server.
+Run `node scripts/verify-retirement.mjs doctor` before any drive when the page looks wrong. It writes `artifacts/verify-retirement/doctor.json` and exits 0 only when a private browser can read the heading `Maximize My Retirement`, the first summary row, and the Save button's client handler. The server HTML shows the heading and the row before that handler exists. The handler check looks for a `__reactProps` field on `button-save-plan`. Vite dev adds that field. A production bundle does not, so this doctor is for `npm run dev`. `ownedByThisRun` is true only when this verification run started the server.
 
 ## Drive
 
@@ -42,6 +42,7 @@ node scripts/verify-retirement.mjs drive balance
 node scripts/verify-retirement.mjs drive agi
 node scripts/verify-retirement.mjs drive save-load
 node scripts/verify-retirement.mjs drive guide
+node scripts/verify-retirement.mjs drive year-display
 ```
 
 Use the test ids in the feature file. Do not click by pixel. Do not call `setInputs` or post a plan into the worker. The path is the controls on the page.
@@ -72,4 +73,4 @@ If `server.pid` exists, cleanup sends `SIGTERM` to that pid only. It then delete
 
 ## Helpers
 
-`scripts/verify-retirement.mjs` is the only helper. Invoke it as shown above. `doctor`, `launch`, and `cleanup` take no feature argument. `drive` requires `balance`, `agi`, `save-load`, or `guide`.
+`scripts/verify-retirement.mjs` is the only helper. Invoke it as shown above. `doctor`, `launch`, and `cleanup` take no feature argument. `drive` requires `balance`, `agi`, `save-load`, `guide`, or `year-display`.

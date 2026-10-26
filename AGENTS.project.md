@@ -1,6 +1,6 @@
 # Project skills
 
-pstack 0.15.30 is vendored at `pstack/` (MIT, Lauren Tan, https://github.com/cursor/plugins/tree/main/pstack).
+pstack 0.15.32 is vendored at `pstack/` (MIT, Lauren Tan, https://github.com/cursor/plugins/tree/main/pstack).
 
 Each skill directory is linked from `.grok/skills/<name>`, `.cursor/skills/<name>`, and `.agents/skills/<name>`. Those links point at `pstack/skills/<name>`.
 

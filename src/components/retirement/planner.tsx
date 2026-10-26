@@ -98,8 +98,12 @@ function axisMoney(value: number): string {
   return `$${value}`;
 }
 
-function ageLabel(row: ProjectionRow): string {
-  return row.spouseAge !== null ? `${row.age}/${row.spouseAge}` : String(row.age);
+function ageLabel(row: ProjectionRow, inputs: PlannerInputs): string {
+  const mark = (age: number, dead: boolean) => (dead ? `(${age})` : String(age));
+  const primary = mark(row.age, row.year > inputs.birthYear + inputs.longevityAge);
+  if (row.spouseAge === null || inputs.spouseBirthYear === null) return primary;
+  const spouse = mark(row.spouseAge, row.year > inputs.spouseBirthYear + inputs.spouseLongevityAge);
+  return `${primary}/${spouse}`;
 }
 
 function NumberFieldRow(props: {
@@ -809,12 +813,12 @@ function ChartTooltip({
   payload,
 }: {
   active?: boolean;
-  payload?: Array<{ name?: string; value?: number; color?: string; payload?: { year: number; age: number; spouseAge: number | null } }>;
+  payload?: Array<{ name?: string; value?: number; color?: string; payload?: { year: number; ages: string } }>;
 }) {
   if (!active || !payload || payload.length === 0) return null;
   const row = payload[0]?.payload;
   if (!row) return null;
-  const ages = row.spouseAge != null ? `${row.age}/${row.spouseAge}` : `${row.age}`;
+  const ages = row.ages;
   const total = payload.reduce((sum, item) => sum + (item.value || 0), 0);
   return (
     <div className="rounded-md border border-popover-border bg-popover p-3 shadow-lg">
@@ -838,11 +842,10 @@ function ChartTooltip({
   );
 }
 
-function GrowthChart({ rows }: { rows: ProjectionRow[] }) {
+function GrowthChart({ rows, inputs }: { rows: ProjectionRow[]; inputs: PlannerInputs }) {
   const data = rows.map((row) => ({
     year: row.year,
-    age: row.age,
-    spouseAge: row.spouseAge,
+    ages: ageLabel(row, inputs),
     label: `${row.year}`,
     [ACCOUNT_LABELS.fourOhOneK]: row.accounts.fourOhOneK.endBalance,
     [ACCOUNT_LABELS.rothIra]: row.accounts.rothIra.endBalance,
@@ -942,7 +945,7 @@ function ColumnHeader({
   );
 }
 
-function SummaryTable({ rows, year, onSelect }: { rows: ProjectionRow[]; year: number; onSelect: (year: number) => void }) {
+function SummaryTable({ rows, inputs, year, onSelect }: { rows: ProjectionRow[]; inputs: PlannerInputs; year: number; onSelect: (year: number) => void }) {
   const columns: { label: string; title?: string; align: "left" | "right"; bold?: boolean }[] = [
     { label: "Year", align: "left" },
     { label: "Age", align: "left" },
@@ -994,7 +997,7 @@ function SummaryTable({ rows, year, onSelect }: { rows: ProjectionRow[]; year: n
               className={`cursor-pointer border-b transition-colors ${row.year === year ? "bg-primary/10" : "hover:bg-muted/50"}`}
             >
               <td className="p-4 align-middle text-xs font-medium">{row.year}</td>
-              <td className="p-4 align-middle text-xs">{ageLabel(row)}</td>
+              <td className="p-4 align-middle text-xs">{ageLabel(row, inputs)}</td>
               <td className="p-4 text-right align-middle text-xs">{money(row.accounts.rothIra.endBalance)}</td>
               <td className="p-4 text-right align-middle text-xs">{money(row.accounts.hsa.endBalance)}</td>
               <td className="p-4 text-right align-middle text-xs">{money(row.accounts.fourOhOneK.endBalance)}</td>
@@ -1026,7 +1029,7 @@ function SummaryTable({ rows, year, onSelect }: { rows: ProjectionRow[]; year: n
   );
 }
 
-function AccountTable({ rows, accountType }: { rows: ProjectionRow[]; accountType: AccountType }) {
+function AccountTable({ rows, inputs, accountType }: { rows: ProjectionRow[]; inputs: PlannerInputs; accountType: AccountType }) {
   const columns = ["Year", "Age", "Starting Balance", "Contribution", "Withdrawal", "Growth", "Ending Balance"];
   const { widths, onResizeStart } = useColumnWidths();
   return (
@@ -1055,7 +1058,7 @@ function AccountTable({ rows, accountType }: { rows: ProjectionRow[]; accountTyp
             return (
               <tr key={row.year} data-testid={`row-${accountType}-${row.year}`} className="border-b transition-colors hover:bg-muted/50">
                 <td className="p-4 align-middle text-xs font-medium">{row.year}</td>
-                <td className="p-4 align-middle text-xs">{ageLabel(row)}</td>
+                <td className="p-4 align-middle text-xs">{ageLabel(row, inputs)}</td>
                 <td className="p-4 text-right align-middle text-xs">{money(account.startBalance)}</td>
                 <td className="p-4 text-right align-middle text-xs text-green-600 dark:text-green-400">
                   {account.contribution > 0 ? money(account.contribution) : "-"}
@@ -1076,7 +1079,7 @@ function AccountTable({ rows, accountType }: { rows: ProjectionRow[]; accountTyp
   );
 }
 
-function FourOhOneKTable({ rows, year, onSelect }: { rows: ProjectionRow[]; year: number; onSelect: (year: number) => void }) {
+function FourOhOneKTable({ rows, inputs, year, onSelect }: { rows: ProjectionRow[]; inputs: PlannerInputs; year: number; onSelect: (year: number) => void }) {
   const headers: { label: string; title?: string; align: "left" | "right" }[] = [
     { label: "Year", align: "left" },
     { label: "Age", align: "left" },
@@ -1122,7 +1125,7 @@ function FourOhOneKTable({ rows, year, onSelect }: { rows: ProjectionRow[]; year
                 className={`cursor-pointer border-b transition-colors ${row.year === year ? "bg-primary/10" : "hover:bg-muted/50"}`}
               >
                 <td className="px-3 py-3 align-middle text-xs font-medium">{row.year}</td>
-                <td className="px-3 py-3 align-middle text-xs">{ageLabel(row)}</td>
+                <td className="px-3 py-3 align-middle text-xs">{ageLabel(row, inputs)}</td>
                 <td className="px-3 py-3 text-right align-middle text-xs">{money(account.startBalance)}</td>
                 <td className="px-3 py-3 text-right align-middle text-xs text-green-600 dark:text-green-400">
                   {account.contribution > 0 ? money(account.contribution) : "-"}
@@ -1264,6 +1267,9 @@ function SpendableBreakout({ row }: { row: ProjectionRow | undefined }) {
     <div className="mt-4 rounded-md border p-4" data-testid="panel-spendable-breakout">
       <div className="mb-3">
         <p className="text-sm font-semibold">How the spendable amount was calculated</p>
+        <p className="text-sm font-semibold" data-testid="text-spendable-year">
+          {row.year}
+        </p>
         <p className="max-w-xl text-xs text-muted-foreground">
           Select a year in the table. Roth and taxable balances count in full. Cashing out the 401(k) and HSA still in the accounts adds the extra federal and state tax, this year's IRMAA surcharge, and the extra IRMAA that cash-out would cause two years later. A 401(k) cashed out before 60 also loses 10%. An HSA spent on anything other than medical care before 65 loses 20%.
         </p>
@@ -1320,6 +1326,14 @@ function SpendableBreakout({ row }: { row: ProjectionRow | undefined }) {
       </div>
       <div className="mt-4 border-t pt-3" data-testid="panel-bracket-tax">
         <p className="text-xs font-medium">Federal tax paid in each bracket</p>
+        <p className="text-xs font-medium" data-testid="text-bracket-year">
+          {row.year}
+        </p>
+        <p className="mt-1 text-xs" data-testid="text-bracket-filing">
+          {row.filingStatus === "married"
+            ? "These taxes are calculated for Married Filing Jointly."
+            : "These taxes are calculated for a Single filing."}
+        </p>
         <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
           Ordinary income after the deduction, and the federal tax charged at that rate. The amounts add up to the federal tax lines above.
         </p>
@@ -1345,7 +1359,7 @@ function SpendableBreakout({ row }: { row: ProjectionRow | undefined }) {
   );
 }
 
-function ProjectionTable({ rows }: { rows: ProjectionRow[] }) {
+function ProjectionTable({ rows, inputs }: { rows: ProjectionRow[]; inputs: PlannerInputs }) {
   const firstFeeYear = rows.find((row) => row.taxSummary.irmaa.enrollees > 0 && row.taxSummary.irmaa.annualFee !== null)?.year;
   const [spendableYear, setSpendableYear] = useState(rows[0]?.year ?? CURRENT_YEAR);
   const [irmaaYear, setIrmaaYear] = useState(firstFeeYear ?? rows.find((row) => row.age >= 65)?.year ?? rows[0]?.year ?? CURRENT_YEAR);
@@ -1376,18 +1390,18 @@ function ProjectionTable({ rows }: { rows: ProjectionRow[] }) {
             </TabsTrigger>
           </TabsList>
           <TabsContent value="summary">
-            <SummaryTable rows={rows} year={spendableRow?.year ?? spendableYear} onSelect={setSpendableYear} />
+            <SummaryTable rows={rows} inputs={inputs} year={spendableRow?.year ?? spendableYear} onSelect={setSpendableYear} />
             <SpendableBreakout row={spendableRow} />
           </TabsContent>
           {ACCOUNT_TYPES.map((type) => (
             <TabsContent key={type} value={type}>
               {type === "fourOhOneK" ? (
                 <>
-                  <FourOhOneKTable rows={rows} year={irmaaRow?.year ?? irmaaYear} onSelect={setIrmaaYear} />
+                  <FourOhOneKTable rows={rows} inputs={inputs} year={irmaaRow?.year ?? irmaaYear} onSelect={setIrmaaYear} />
                   <IrmaaBreakout row={irmaaRow} />
                 </>
               ) : (
-                <AccountTable rows={rows} accountType={type} />
+                <AccountTable rows={rows} inputs={inputs} accountType={type} />
               )}
             </TabsContent>
           ))}
@@ -1516,7 +1530,7 @@ function PlanTransfer({ inputs, onLoad }: { inputs: PlannerInputs; onLoad: (next
       <div className="flex flex-wrap justify-end gap-1.5">
         <a
           href="/maximize-my-retirement-guide.pdf"
-          download="Maximize My Retirement - User Guide.pdf"
+          download="Maximize My Retirement User's Guide.pdf"
           className={buttonClass}
           data-testid="link-user-guide"
         >
@@ -1635,8 +1649,8 @@ export function RetirementPlanner() {
           </aside>
           <div className="space-y-6">
             <Stats rows={rows} inputs={inputs} />
-            <GrowthChart rows={rows} />
-            <ProjectionTable rows={rows} />
+            <GrowthChart rows={rows} inputs={inputs} />
+            <ProjectionTable rows={rows} inputs={inputs} />
           </div>
         </div>
       </main>
