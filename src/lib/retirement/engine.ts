@@ -71,6 +71,9 @@ export type PlannerInputs = {
   agiFirstYearOnly: boolean;
   socialSecurityIncome: number;
   socialSecurityStartAge: number;
+  /** Spouse's own annual retirement check at spouseSocialSecurityStartAge. Not a spousal top-up. */
+  spouseSocialSecurityIncome: number;
+  spouseSocialSecurityStartAge: number;
   state: string;
   /** Search for the Roth conversions that maximize money left at the end. */
   optimizeDistributions: boolean;
@@ -225,6 +228,8 @@ export function defaultInputs(): PlannerInputs {
     agiFirstYearOnly: false,
     socialSecurityIncome: 0,
     socialSecurityStartAge: 67,
+    spouseSocialSecurityIncome: 0,
+    spouseSocialSecurityStartAge: 67,
     state: "GA",
     optimizeDistributions: false,
     optimizeThroughAge: 90,
@@ -299,6 +304,8 @@ export function parsePlannerInputs(text: string): PlannerInputs {
     (plan.agiFirstYearOnly !== undefined && typeof plan.agiFirstYearOnly !== "boolean") ||
     !isFiniteNumber(plan.socialSecurityIncome) ||
     !isFiniteNumber(plan.socialSecurityStartAge) ||
+    (plan.spouseSocialSecurityIncome !== undefined && !isFiniteNumber(plan.spouseSocialSecurityIncome)) ||
+    (plan.spouseSocialSecurityStartAge !== undefined && !isFiniteNumber(plan.spouseSocialSecurityStartAge)) ||
     typeof state !== "string" ||
     !(state in STATE_NAMES) ||
     (plan.optimizeDistributions !== undefined && typeof plan.optimizeDistributions !== "boolean") ||
@@ -321,6 +328,8 @@ export function parsePlannerInputs(text: string): PlannerInputs {
     agiFirstYearOnly: plan.agiFirstYearOnly === true,
     socialSecurityIncome: plan.socialSecurityIncome,
     socialSecurityStartAge: plan.socialSecurityStartAge,
+    spouseSocialSecurityIncome: isFiniteNumber(plan.spouseSocialSecurityIncome) ? plan.spouseSocialSecurityIncome : 0,
+    spouseSocialSecurityStartAge: isFiniteNumber(plan.spouseSocialSecurityStartAge) ? plan.spouseSocialSecurityStartAge : 67,
     state,
     optimizeDistributions: plan.optimizeDistributions === true,
     optimizeThroughAge: isFiniteNumber(plan.optimizeThroughAge) ? plan.optimizeThroughAge : plan.longevityAge,
@@ -670,6 +679,135 @@ export function taxableSocialSecurity(benefit: number, otherIncome: number, fili
   return Math.min(0.85 * benefit, 0.85 * (provisional - second) + Math.min(lower, cap));
 }
 
+/**
+ * Birthday and death are July 1. A retirement check starts in the month the
+ * integer start age is reached, and the month of death is not paid, so a
+ * start year and a death year each contain six months. Survivor benefits use
+ * 20 C.F.R. § 404.338 and 42 U.S.C. § 402(e): the base is the deceased
+ * worker's primary insurance amount, delayed credits stop at 70, and a
+ * reduced retirement check the deceased had already started caps the
+ * survivor benefit after the survivor's own age reduction.
+ */
+type SocialSecurityPerson = {
+  annual: number;
+  startAge: number;
+  birthYear: number;
+  longevityAge: number;
+};
+
+function retirementFullAgeMonths(birthYear: number): number {
+  if (birthYear <= 1937) return 65 * 12;
+  if (birthYear <= 1942) return 65 * 12 + (birthYear - 1937) * 2;
+  if (birthYear <= 1954) return 66 * 12;
+  if (birthYear <= 1959) return 66 * 12 + (birthYear - 1954) * 2;
+  return 67 * 12;
+}
+
+function delayedCreditPerMonth(birthYear: number): number {
+  if (birthYear >= 1943) return 2 / 300;
+  if (birthYear >= 1941) return 5 / 800;
+  if (birthYear >= 1939) return 7 / 1200;
+  if (birthYear >= 1937) return 13 / 2400;
+  if (birthYear >= 1935) return 1 / 200;
+  return 11 / 2400;
+}
+
+function workerPayFactor(birthYear: number, startAge: number): number {
+  const fullAge = retirementFullAgeMonths(birthYear);
+  const claim = startAge * 12;
+  if (claim < fullAge) {
+    const early = fullAge - claim;
+    const first = Math.min(36, early);
+    return 1 - first * (5 / 900) - (early - first) * (5 / 1200);
+  }
+  const delayed = Math.min(claim, 70 * 12) - fullAge;
+  return 1 + Math.max(0, delayed) * delayedCreditPerMonth(birthYear);
+}
+
+function ageInMonths(birthYear: number, year: number, month: number): number {
+  return (year - birthYear) * 12 + (month - 7);
+}
+
+function aliveInMonth(person: SocialSecurityPerson, year: number, month: number): boolean {
+  const deathYear = person.birthYear + person.longevityAge;
+  if (year < deathYear) return true;
+  if (year > deathYear) return false;
+  return month <= 6;
+}
+
+function workerMonthly(person: SocialSecurityPerson, year: number, month: number): number {
+  if (person.annual <= 0 || !aliveInMonth(person, year, month)) return 0;
+  if (ageInMonths(person.birthYear, year, month) < person.startAge * 12) return 0;
+  return person.annual / 12;
+}
+
+function insuredAnnualForSurvivor(person: SocialSecurityPerson): number {
+  const factor = workerPayFactor(person.birthYear, person.startAge);
+  const pia = factor > 0.05 ? person.annual / factor : person.annual;
+  const fullAge = retirementFullAgeMonths(person.birthYear);
+  const entitled = person.longevityAge > person.startAge;
+  const through = entitled ? person.startAge * 12 : person.longevityAge * 12;
+  const credits = Math.max(0, Math.min(through, 70 * 12) - fullAge);
+  return pia * (1 + credits * delayedCreditPerMonth(person.birthYear));
+}
+
+function survivorMonthly(survivor: SocialSecurityPerson, deceased: SocialSecurityPerson, year: number, month: number): number {
+  if (deceased.annual <= 0 || !aliveInMonth(survivor, year, month) || aliveInMonth(deceased, year, month)) return 0;
+  const ageMonths = ageInMonths(survivor.birthYear, year, month);
+  if (ageMonths < 60 * 12) return 0;
+  const insured = insuredAnnualForSurvivor(deceased) / 12;
+  const fullAge = retirementFullAgeMonths(survivor.birthYear + 2);
+  let benefit = insured;
+  if (ageMonths < fullAge) {
+    const span = fullAge - 60 * 12;
+    benefit = insured * (1 - 0.285 * ((fullAge - ageMonths) / span));
+  }
+  const deceasedFullAge = retirementFullAgeMonths(deceased.birthYear);
+  const claimedEarly = deceased.longevityAge > deceased.startAge && deceased.startAge * 12 < deceasedFullAge;
+  if (claimedEarly) {
+    const factor = workerPayFactor(deceased.birthYear, deceased.startAge);
+    const pia = factor > 0.05 ? deceased.annual / factor : deceased.annual;
+    benefit = Math.min(benefit, Math.max(deceased.annual, 0.825 * pia) / 12);
+  }
+  return benefit;
+}
+
+/** Annual Social Security the household receives. One check per living worker, then the survivor rule. */
+export function householdSocialSecurity(inputs: PlannerInputs, year: number): number {
+  const primary: SocialSecurityPerson = {
+    annual: Math.max(0, inputs.socialSecurityIncome),
+    startAge: inputs.socialSecurityStartAge,
+    birthYear: inputs.birthYear,
+    longevityAge: inputs.longevityAge,
+  };
+  const married =
+    inputs.filingStatus === "married" && inputs.spouseBirthYear !== null && inputs.marriageYear !== null && year >= inputs.marriageYear;
+  const spouse: SocialSecurityPerson | null =
+    married && inputs.spouseBirthYear !== null
+      ? {
+          annual: Math.max(0, inputs.spouseSocialSecurityIncome),
+          startAge: inputs.spouseSocialSecurityStartAge,
+          birthYear: inputs.spouseBirthYear,
+          longevityAge: inputs.spouseLongevityAge,
+        }
+      : null;
+  const primaryDiedMarried = spouse !== null && inputs.birthYear + inputs.longevityAge >= (inputs.marriageYear ?? year + 1);
+  const spouseDiedMarried = spouse !== null && inputs.spouseBirthYear !== null && inputs.spouseBirthYear + inputs.spouseLongevityAge >= (inputs.marriageYear ?? year + 1);
+  let total = 0;
+  for (let month = 1; month <= 12; month++) {
+    const primaryOwn = workerMonthly(primary, year, month);
+    if (!spouse) {
+      total += primaryOwn;
+      continue;
+    }
+    const spouseOwn = workerMonthly(spouse, year, month);
+    const primaryBenefit = Math.max(primaryOwn, primaryDiedMarried ? survivorMonthly(primary, spouse, year, month) : 0);
+    const spouseBenefit = Math.max(spouseOwn, spouseDiedMarried ? survivorMonthly(spouse, primary, year, month) : 0);
+    total += primaryBenefit + spouseBenefit;
+  }
+  return Math.round(total * 100) / 100;
+}
+
 function rmdStartAge(birthYear: number): number {
   if (birthYear >= 1960) return 75;
   if (birthYear >= 1951) return 73;
@@ -784,8 +922,7 @@ function projectPerson(
   agi: number,
   types: AccountType[],
   state: string,
-  ssBenefitAnnual: number,
-  ssStartAge: number,
+  ssAnnual: number,
   ordinaryAlready: number,
   who: "primary" | "spouse",
   taxAge: number,
@@ -794,7 +931,7 @@ function projectPerson(
   plannedConversion: number | null = null,
 ): YearSlice {
   const filing: FilingStatus = marriedThisYear ? "married" : "single";
-  const ss = age >= ssStartAge ? ssBenefitAnnual : 0;
+  const ss = ssAnnual;
   const taxableSS = taxableSocialSecurity(ss, agi, filing);
   const baseIncome = agi + taxableSS;
   const rmdAge = rmdStartAge(birthYear);
@@ -1177,6 +1314,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
     const retired = year >= inputs.retirementYear;
     const plannedPrimary = plan ? (plan[year]?.primary ?? 0) : null;
     const survivorIsSpouse = !home.primaryAlive && home.spouseAlive;
+    const ssIncome = householdSocialSecurity(inputs, year);
     const primary = projectPerson(
       inputs.accounts,
       balances,
@@ -1189,8 +1327,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
       agi,
       [...ACCOUNT_TYPES],
       inputs.state,
-      inputs.socialSecurityIncome,
-      inputs.socialSecurityStartAge,
+      ssIncome,
       0,
       "primary",
       taxAge,
@@ -1213,8 +1350,7 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
         agi,
         ["rothIra", "hsa", "fourOhOneK"],
         inputs.state,
-        inputs.socialSecurityIncome,
-        inputs.socialSecurityStartAge,
+        ssIncome,
         primary.rmdAmount + primary.conversionAmount,
         "spouse",
         taxAge,
@@ -1237,7 +1373,6 @@ function runProjection(inputs: PlannerInputs, plan: ConversionPlan | null, settl
     room[year] = { primary: primary.convertible, spouse: spouse?.convertible ?? 0 };
     kept += primary.cashKept + (spouse?.cashKept ?? 0);
     const accounts = mergeAccounts(primary.accounts, spouse ? spouse.accounts : null);
-    const ssIncome = age >= inputs.socialSecurityStartAge ? inputs.socialSecurityIncome : 0;
     const rmdAmount = primary.rmdAmount + (spouse?.rmdAmount ?? 0);
     const conversionAmount = primary.conversionAmount + (spouse?.conversionAmount ?? 0);
     const ordinary = rmdAmount + conversionAmount;
@@ -1517,7 +1652,7 @@ export function simulatePlan(inputs: PlannerInputs, plan: ConversionPlan): { row
     const convP = allowP ? Math.min(roomP, Math.max(0, plan[year]?.primary ?? 0)) : 0;
     const convS = allowS ? Math.min(roomS, Math.max(0, plan[year]?.spouse ?? 0)) : 0;
 
-    const ssIncome = age >= inputs.socialSecurityStartAge ? inputs.socialSecurityIncome : 0;
+    const ssIncome = householdSocialSecurity(inputs, year);
     const ordinary = rmdP + rmdS + convP + convS;
     const taxableSS = taxableSocialSecurity(ssIncome, agi + ordinary, filingNow);
     const gross = agi + taxableSS + ordinary;
@@ -1847,7 +1982,7 @@ export function optimizerCensus(inputs: PlannerInputs): OptimizerYear[] {
     const taxAge = home.taxAge;
     const taxSpouseAge = home.taxSpouseAge;
     const spouseActive = home.spouseAccountsActive;
-    const ss = age >= inputs.socialSecurityStartAge ? inputs.socialSecurityIncome : 0;
+    const ss = householdSocialSecurity(inputs, year);
     const baseSs = taxableSocialSecurity(ss, agi, filing);
     const baseTax =
       federalTax(agi + baseSs, filing, taxAge, taxSpouseAge, agi) +

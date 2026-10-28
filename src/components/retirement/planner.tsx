@@ -743,7 +743,7 @@ function InputsForm({ inputs, onChange }: { inputs: PlannerInputs; onChange: (ne
             <Separator />
             <div className="grid grid-cols-[1fr_auto] items-end gap-3">
               <NumberField
-                label={married ? "Social Security (combined)" : "Social Security"}
+                label={married ? "Social Security (Primary)" : "Social Security"}
                 value={inputs.socialSecurityIncome}
                 onChange={(value) => onChange({ ...inputs, socialSecurityIncome: value })}
                 prefix="$"
@@ -761,6 +761,31 @@ function InputsForm({ inputs, onChange }: { inputs: PlannerInputs; onChange: (ne
                 testId="input-ss-start-age"
               />
             </div>
+            {married ? (
+              <div className="grid grid-cols-[1fr_auto] items-end gap-3">
+                <NumberField
+                  label="Social Security (Spouse)"
+                  value={inputs.spouseSocialSecurityIncome}
+                  onChange={(value) => onChange({ ...inputs, spouseSocialSecurityIncome: value })}
+                  prefix="$"
+                  useCommas
+                  min={0}
+                  testId="input-spouse-social-security"
+                />
+                <NumberField
+                  label="Start Age"
+                  value={inputs.spouseSocialSecurityStartAge}
+                  onChange={(value) => onChange({ ...inputs, spouseSocialSecurityStartAge: value })}
+                  min={62}
+                  max={70}
+                  commitOnBlur
+                  testId="input-spouse-ss-start-age"
+                />
+              </div>
+            ) : null}
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              Each amount is that person's annual check at the start age. The start year and the year of death count six months. After a death, the survivor receives the larger of their own check and the survivor benefit.
+            </p>
           </div>
           <div className="space-y-1.5 pt-2">
             <Separator />
