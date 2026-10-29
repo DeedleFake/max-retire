@@ -19,6 +19,7 @@ import {
   HeartPulse,
   Landmark,
   Loader2,
+  Pencil,
   PiggyBank,
   Target,
   TrendingUp,
@@ -1568,6 +1569,7 @@ function PlanTransfer({ inputs, onLoad }: { inputs: PlannerInputs; onLoad: (next
 }
 
 export function RetirementPlanner() {
+  const planTitleRef = useRef<HTMLInputElement>(null);
   const [inputs, setInputs] = useState<PlannerInputs>(() => defaultInputs());
   const deferredInputs = useDeferredValue(inputs);
   const planInputs = inputs.optimizeDistributions ? deferredInputs : inputs;
@@ -1619,14 +1621,34 @@ export function RetirementPlanner() {
               <Landmark className="h-4 w-4 text-primary lg:h-5 lg:w-5" />
             </div>
             <div className="min-w-0 flex-1">
-              <input
-                value={inputs.title}
-                onChange={(event) => setInputs({ ...inputs, title: event.target.value })}
-                aria-label="Plan name"
-                placeholder="Plan name"
-                data-testid="input-plan-title"
-                className="w-full bg-transparent text-sm font-bold tracking-tight outline-none placeholder:text-muted-foreground lg:text-base"
-              />
+              <div className="relative min-w-0">
+                <input
+                  ref={planTitleRef}
+                  value={inputs.title}
+                  onChange={(event) => setInputs({ ...inputs, title: event.target.value })}
+                  aria-label="Plan name"
+                  placeholder="Plan name"
+                  data-testid="input-plan-title"
+                  className="h-8 w-full rounded-md border border-input bg-background pl-2 pr-8 text-sm font-bold tracking-tight placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background lg:text-base"
+                />
+                <button
+                  type="button"
+                  aria-label="Edit plan name"
+                  data-testid="button-edit-plan-title"
+                  className="absolute right-0.5 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground"
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    planTitleRef.current?.focus();
+                    planTitleRef.current?.select();
+                  }}
+                  onClick={() => {
+                    planTitleRef.current?.focus();
+                    planTitleRef.current?.select();
+                  }}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
+              </div>
               <p className="truncate text-xs text-muted-foreground">Maximize My Retirement</p>
             </div>
             <PlanTransfer inputs={inputs} onLoad={setInputs} />
