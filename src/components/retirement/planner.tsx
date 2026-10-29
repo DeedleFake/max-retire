@@ -50,10 +50,12 @@ import {
   catchUp,
   defaultInputs,
   displayedLimit,
+  enableMaximize,
   optimizationTargetAge,
   parsePlannerInputs,
   project,
   serializePlannerInputs,
+  planFileName,
   spendableWeight,
 } from "@/lib/retirement/engine";
 import type { PlanMessage } from "@/lib/retirement/optimize.worker";
@@ -444,30 +446,6 @@ function AccountPanel({
       ) : null}
     </Card>
   );
-}
-
-function enableMaximize(inputs: PlannerInputs): PlannerInputs {
-  const seed = (accounts: PlannerInputs["accounts"]): PlannerInputs["accounts"] => {
-    const current = accounts.fourOhOneK;
-    if (current.preRmdConversion || current.rmdConversion) return accounts;
-    return {
-      ...accounts,
-      fourOhOneK: {
-        ...current,
-        preRmdConversion: true,
-        rmdConversion: true,
-        preRmdConversionBracketRate: 37,
-        rmdConversionBracketRate: 37,
-        payConversionTaxFromTaxable: true,
-      },
-    };
-  };
-  return {
-    ...inputs,
-    optimizeDistributions: true,
-    accounts: seed(inputs.accounts),
-    spouseAccounts: seed(inputs.spouseAccounts),
-  };
 }
 
 function AccountTabs({
@@ -1514,10 +1492,10 @@ function PlanTransfer({ inputs, onLoad }: { inputs: PlannerInputs; onLoad: (next
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "retirement-plan.json";
+    link.download = planFileName(inputs.title);
     link.click();
     URL.revokeObjectURL(url);
-    setStatus("Saved retirement-plan.json");
+    setStatus(`Saved ${planFileName(inputs.title)}`);
   }
 
   async function copy() {
@@ -1594,8 +1572,14 @@ export function RetirementPlanner() {
   const deferredInputs = useDeferredValue(inputs);
   const planInputs = inputs.optimizeDistributions ? deferredInputs : inputs;
   const planKey = serializePlannerInputs(planInputs);
-  const [rows, setRows] = useState<ProjectionRow[]>(() => project(defaultInputs()));
-  const [solving, setSolving] = useState(false);
+
+  useEffect(() => {
+    const name = inputs.title.trim();
+    document.title = name.length > 0 ? `${name} · Maximize My Retirement` : "Maximize My Retirement";
+  }, [inputs.title]);
+
+  const [rows, setRows] = useState<ProjectionRow[]>(() => project({ ...defaultInputs(), optimizeDistributions: false }));
+  const [solving, setSolving] = useState(() => defaultInputs().optimizeDistributions);
   const [exact, setExact] = useState(true);
   const maximizing = inputs.optimizeDistributions && (solving || inputs !== deferredInputs);
 
@@ -1635,10 +1619,15 @@ export function RetirementPlanner() {
               <Landmark className="h-4 w-4 text-primary lg:h-5 lg:w-5" />
             </div>
             <div className="min-w-0 flex-1">
-              <h1 className="truncate text-sm font-bold tracking-tight lg:text-base" data-testid="text-app-title">
-                Maximize My Retirement
-              </h1>
-              <p className="hidden truncate text-xs text-muted-foreground lg:block">Maximize your retirement savings across multiple account types</p>
+              <input
+                value={inputs.title}
+                onChange={(event) => setInputs({ ...inputs, title: event.target.value })}
+                aria-label="Plan name"
+                placeholder="Plan name"
+                data-testid="input-plan-title"
+                className="w-full bg-transparent text-sm font-bold tracking-tight outline-none placeholder:text-muted-foreground lg:text-base"
+              />
+              <p className="truncate text-xs text-muted-foreground">Maximize My Retirement</p>
             </div>
             <PlanTransfer inputs={inputs} onLoad={setInputs} />
           </div>

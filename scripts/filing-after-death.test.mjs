@@ -23,6 +23,16 @@ function expectTax(found, expected) {
   assert.equal(tax.irmaa.lookbackFiling, expected.lookback, `${found.year} IRMAA lookback filing`);
 }
 
+function openedPlan() {
+  const inputs = defaultInputs();
+  inputs.optimizeDistributions = false;
+  for (const group of [inputs.accounts, inputs.spouseAccounts]) {
+    group.fourOhOneK.preRmdConversion = false;
+    group.fourOhOneK.rmdConversion = false;
+  }
+  return inputs;
+}
+
 function silenceContributions(inputs) {
   for (const group of [inputs.accounts, inputs.spouseAccounts]) {
     for (const type of ["rothIra", "hsa", "fourOhOneK", "taxable"]) {
@@ -32,8 +42,17 @@ function silenceContributions(inputs) {
   }
 }
 
-test("the year of the primary death stays joint and the next year is single", () => {
+test("a new plan starts with maximize on", () => {
   const inputs = defaultInputs();
+  assert.equal(inputs.optimizeDistributions, true);
+  assert.equal(inputs.accounts.fourOhOneK.preRmdConversion, true);
+  assert.equal(inputs.accounts.fourOhOneK.rmdConversion, true);
+  assert.equal(inputs.accounts.fourOhOneK.preRmdConversionBracketRate, 37);
+  assert.equal(inputs.spouseAccounts.fourOhOneK.payConversionTaxFromTaxable, true);
+});
+
+test("the year of the primary death stays joint and the next year is single", () => {
+  const inputs = openedPlan();
   inputs.longevityAge = 80;
   inputs.spouseLongevityAge = 100;
   inputs.adjustedGrossIncome = 80_000;
@@ -81,7 +100,7 @@ test("the year of the primary death stays joint and the next year is single", ()
 });
 
 test("the year of the spouse death stays joint and the next year is single", () => {
-  const inputs = defaultInputs();
+  const inputs = openedPlan();
   inputs.longevityAge = 100;
   inputs.spouseLongevityAge = 70;
   inputs.adjustedGrossIncome = 80_000;
@@ -123,7 +142,7 @@ test("the year of the spouse death stays joint and the next year is single", () 
 });
 
 test("a year before the marriage is a single return", () => {
-  const inputs = defaultInputs();
+  const inputs = openedPlan();
   inputs.marriageYear = 2040;
   inputs.adjustedGrossIncome = 0;
   const projected = project(inputs);
@@ -155,7 +174,7 @@ test("a year before the marriage is a single return", () => {
 });
 
 test("the surviving spouse keeps the Georgia retirement exclusion and the balance", () => {
-  const inputs = defaultInputs();
+  const inputs = openedPlan();
   inputs.longevityAge = 80;
   inputs.spouseLongevityAge = 100;
   inputs.adjustedGrossIncome = 0;
@@ -180,7 +199,7 @@ test("the surviving spouse keeps the Georgia retirement exclusion and the balanc
 });
 
 test("a survivor under 65 does not pay IRMAA for a dead spouse", () => {
-  const inputs = defaultInputs();
+  const inputs = openedPlan();
   inputs.longevityAge = 80;
   inputs.spouseBirthYear = 1980;
   inputs.spouseLongevityAge = 100;

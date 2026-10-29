@@ -59,6 +59,8 @@ export type AccountSettings = {
 };
 
 export type PlannerInputs = {
+  /** Name shown at the top and used as the saved file name. */
+  title: string;
   birthYear: number;
   retirementYear: number;
   filingStatus: FilingStatus;
@@ -215,8 +217,31 @@ export function createAccounts(who: "primary" | "spouse", birthYear: number): Re
   };
 }
 
-export function defaultInputs(): PlannerInputs {
+function maximizedFourOhOneK(account: AccountSettings): AccountSettings {
+  if (account.preRmdConversion || account.rmdConversion) return account;
   return {
+    ...account,
+    preRmdConversion: true,
+    rmdConversion: true,
+    preRmdConversionBracketRate: 37,
+    rmdConversionBracketRate: 37,
+    payConversionTaxFromTaxable: true,
+  };
+}
+
+/** The same change as turning on Maximize ending money. */
+export function enableMaximize(inputs: PlannerInputs): PlannerInputs {
+  return {
+    ...inputs,
+    optimizeDistributions: true,
+    accounts: { ...inputs.accounts, fourOhOneK: maximizedFourOhOneK(inputs.accounts.fourOhOneK) },
+    spouseAccounts: { ...inputs.spouseAccounts, fourOhOneK: maximizedFourOhOneK(inputs.spouseAccounts.fourOhOneK) },
+  };
+}
+
+export function defaultInputs(): PlannerInputs {
+  return enableMaximize({
+    title: "Retirement plan",
     birthYear: 1955,
     retirementYear: TAX_YEAR,
     filingStatus: "married",
@@ -236,7 +261,7 @@ export function defaultInputs(): PlannerInputs {
     optimizeSpendableWeight: 1,
     accounts: createAccounts("primary", 1955),
     spouseAccounts: createAccounts("spouse", 1960),
-  };
+  });
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -271,6 +296,12 @@ function isAccountMap(value: unknown): value is Record<AccountType, AccountSetti
   if (!value || typeof value !== "object") return false;
   const map = value as Record<string, unknown>;
   return ACCOUNT_TYPES.every((type) => isAccountSettings(map[type]));
+}
+
+/** Download name for a plan. Unsafe characters are removed. */
+export function planFileName(title: string): string {
+  const cleaned = title.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "").trim().replace(/\s+/g, " ").slice(0, 80);
+  return `${cleaned.length > 0 ? cleaned : "retirement-plan"}.json`;
 }
 
 /** Minified JSON of the planner inputs. */
@@ -308,6 +339,7 @@ export function parsePlannerInputs(text: string): PlannerInputs {
     (plan.spouseSocialSecurityStartAge !== undefined && !isFiniteNumber(plan.spouseSocialSecurityStartAge)) ||
     typeof state !== "string" ||
     !(state in STATE_NAMES) ||
+    (plan.title !== undefined && typeof plan.title !== "string") ||
     (plan.optimizeDistributions !== undefined && typeof plan.optimizeDistributions !== "boolean") ||
     (plan.optimizeThroughAge !== undefined && !isFiniteNumber(plan.optimizeThroughAge)) ||
     (plan.optimizeSpendableWeight !== undefined && !isFiniteNumber(plan.optimizeSpendableWeight)) ||
@@ -317,6 +349,7 @@ export function parsePlannerInputs(text: string): PlannerInputs {
     throw new Error("This is not a retirement plan.");
   }
   return {
+    title: typeof plan.title === "string" ? plan.title : "Retirement plan",
     birthYear: plan.birthYear,
     retirementYear: plan.retirementYear,
     filingStatus: filing,
